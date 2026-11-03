@@ -481,8 +481,24 @@ function ChatMessage({ message, mine }) {
 function CircleMessage({ media }) {
   const video = useRef(null)
   const [playing, setPlaying] = useState(false)
-  const toggle = async () => { if (!video.current) return; try { if (video.current.paused) await video.current.play(); else video.current.pause() } catch { window.alert('Этот формат кружка не поддерживается. Переснимите его в новой версии Mostor.') } }
-  return <button className={`circle-player ${playing ? 'playing' : ''}`} onClick={toggle}><video ref={video} src={media.url} playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} /><span>{playing ? <Pause /> : <Play fill="currentColor" />}</span></button>
+  const [source, setSource] = useState('')
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let objectUrl = ''
+    const prepare = async () => {
+      try {
+        if (media.url?.startsWith('data:')) {
+          const blob = await fetch(media.url).then((response) => response.blob())
+          objectUrl = URL.createObjectURL(blob)
+          setSource(objectUrl)
+        } else setSource(media.url)
+      } catch (reason) { setError(`Не удалось подготовить видео: ${reason.message}`) }
+    }
+    prepare()
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [media.url])
+  const toggle = async () => { if (!video.current || !source) return; try { if (video.current.paused) await video.current.play(); else video.current.pause() } catch (reason) { setError(`Ошибка воспроизведения: ${reason.message}`) } }
+  return <button className={`circle-player ${playing ? 'playing' : ''} ${error ? 'failed' : ''}`} onClick={toggle}>{source && <video ref={video} src={source} playsInline preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onError={() => setError('Браузер не смог декодировать видеозапись.')} />}<span>{error ? <X /> : playing ? <Pause /> : <Play fill="currentColor" />}</span>{error && <small>{error}</small>}</button>
 }
 
 function CallsPage({ calls, users, currentUser, profile }) {
