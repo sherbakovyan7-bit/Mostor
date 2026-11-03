@@ -32,7 +32,7 @@ const initialData = {
   savedPosts: [],
   callHistory: [],
   notifications: [],
-  settings: { compact: false, reduceMotion: false, autoplay: true, sounds: true, timestamps: true },
+  settings: { compact: false, reduceMotion: false, autoplay: true, sounds: true, timestamps: true, themeMode: 'dark', accent: '#caff3d', background: '#0b0d0b', scale: 100 },
   labFlags: {},
 }
 
@@ -51,6 +51,7 @@ const navItems = [
   ['friends', 'Друзья', UserPlus],
   ['cloud', 'Облако', Cloud],
   ['labs', 'Mostor Labs', FlaskConical],
+  ['settings', 'Настройки', Settings],
   ['profile', 'Профиль', Settings],
 ]
 
@@ -389,7 +390,7 @@ function FriendsPage({ data, update, openChat }) {
   return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">КОНТАКТЫ</span><h2>Друзья</h2><p>Добавляйте контакты и начинайте локальную переписку.</p></div><button className="primary" onClick={() => setOpen(true)}><UserPlus />Добавить друга</button></div>{data.friends.length === 0 ? <Empty icon={UserPlus} title="Список друзей пуст" text="Добавьте первый контакт. Для него автоматически станет доступен диалог." action={() => setOpen(true)} actionText="Добавить друга" /> : <div className="friends-grid">{data.friends.map((friend) => <article className="friend-card panel" key={friend.id}><Avatar profile={friend} size={58} /><div><h3>{friend.name}</h3><small>Локальный контакт</small></div><button onClick={() => openChat(friend.id)}><MessageCircle size={18} />Написать</button><button className="danger" onClick={() => remove(friend.id)}><Trash2 size={17} /></button></article>)}</div>}{open && <Modal title="Добавить друга" close={() => setOpen(false)}><label className="field">Имя<input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Имя друга" /></label><button className="primary full" onClick={add}>Добавить</button></Modal>}</main>
 }
 
-function NetworkMessagesPage({ data, users, currentUser, initialFriend, stickerPacks }) {
+function NetworkMessagesPage({ data, update, users, currentUser, initialFriend, stickerPacks }) {
   const contacts = users.filter((user) => user.uid !== currentUser.uid)
   const [selected, setSelected] = useState(initialFriend || contacts[0]?.uid || '')
   const [messages, setMessages] = useState([])
@@ -402,6 +403,7 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend, stickerP
   const [recordSeconds, setRecordSeconds] = useState(0)
   const [circlePreview, setCirclePreview] = useState(null)
   const [stickersOpen, setStickersOpen] = useState(false)
+  const [viewedStickerPack, setViewedStickerPack] = useState(null)
   const fileInput = useRef(null)
   const recorderRef = useRef(null)
   const contact = contacts.find((user) => user.uid === selected)
@@ -518,7 +520,7 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend, stickerP
       circle = document.createElement('button'); circle.type = 'button'; circle.className = 'circle-record-button'; form.insertBefore(circle, form.querySelector('input:not([type="file"])'))
     }
     let sticker = form.querySelector('.sticker-picker-button')
-    if (!sticker) { sticker = document.createElement('button'); sticker.type = 'button'; sticker.className = 'sticker-picker-button'; sticker.textContent = '☺'; form.insertBefore(sticker, form.querySelector('input:not([type="file"])')) }
+    if (!sticker) { sticker = document.createElement('button'); sticker.type = 'button'; sticker.className = 'sticker-picker-button'; sticker.textContent = '☺'; const attachButton = form.querySelector('button'); attachButton?.after(sticker) }
     let picture = form.querySelector('.picture-picker-button')
     if (!picture) { picture = document.createElement('button'); picture.type = 'button'; picture.className = 'picture-picker-button'; picture.textContent = '▧'; form.insertBefore(picture, form.querySelector('input:not([type="file"])')) }
     sticker.onclick = () => setStickersOpen(true)
@@ -529,6 +531,7 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend, stickerP
     circle.classList.toggle('recording', recording === 'circle')
     voice.onclick = () => recording === 'voice' ? stopRecording() : startRecording('voice')
     circle.onclick = () => recording === 'circle' ? stopRecording() : startRecording('circle')
+    document.querySelectorAll('.chat-sticker').forEach((element) => { const pack = stickerPacks.find((item) => item.stickers?.some((stickerItem) => stickerItem.image === element.src)); if (pack) { element.onclick = () => openStickerPack(pack.id); element.title = 'Открыть стикерпак'; element.dataset.packId = pack.id } })
   }, [chatId, recording, recordSeconds, circlePreview, stickersOpen, messages.length])
   const startCall = async (mode) => {
     if (!contact) return
@@ -545,11 +548,14 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend, stickerP
     await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: 'Стикер' }, { merge: true })
     await setDoc(messageRef, { text: '', senderId: currentUser.uid, author: data.profile.name, sticker: payload, createdAt: serverTimestamp(), readBy: [currentUser.uid], repliedBy: [] })
   }
+  const openStickerPack = (packId) => { const pack = stickerPacks.find((item) => item.id === packId); if (pack) setViewedStickerPack(pack) }
+  const addStickerPack = async (packId) => { const current = data.profile.stickerPacks || []; if (current.includes(packId)) return; const next = [...current, packId]; update({ profile: { ...data.profile, stickerPacks: next } }); await setDoc(doc(db, 'users', currentUser.uid), { stickerPacks: next }, { merge: true }); setViewedStickerPack(null) }
   const acceptCall = () => { setCall({ id: incoming.id, mode: incoming.mode, target: incoming.caller, role: 'callee' }); setIncoming(null) }
   const rejectCall = async () => { await updateDoc(doc(db, 'calls', incoming.id), { status: 'missed', endedAt: serverTimestamp() }); if (incoming.chatId && incoming.messageId) await updateDoc(doc(db, 'chats', incoming.chatId, 'messages', incoming.messageId), { systemType: 'missed' }); setIncoming(null) }
 
   if (circlePreview) return <Modal title="Предпросмотр кружка" close={() => { URL.revokeObjectURL(circlePreview.url); setCirclePreview(null) }}><div className="circle-preview"><video src={circlePreview.url} controls autoPlay loop muted playsInline onError={() => window.alert('Браузер не может воспроизвести запись. Переснимите кружок или отправьте видео через скрепку.')} /><p>Проверьте, что видео снялось, затем отправьте.</p><div><button className="secondary" onClick={() => { URL.revokeObjectURL(circlePreview.url); setCirclePreview(null); setTimeout(() => startRecording('circle'), 0) }}>Переснять</button><button className="primary" onClick={async () => { await sendMediaBlob(circlePreview.blob, 'circle'); URL.revokeObjectURL(circlePreview.url); setCirclePreview(null) }}><Send />Отправить</button></div></div></Modal>
   if (stickersOpen) { const owned = stickerPacks.filter((pack) => data.profile.stickerPacks?.includes(pack.id)); return <Modal title="Стикеры" close={() => setStickersOpen(false)} wide>{owned.length === 0 ? <div className="notification-empty"><Smile /><p>Добавьте стикерпак в разделе «Стикеры».</p></div> : <div className="chat-sticker-picker">{owned.map((pack) => <section key={pack.id}><h3>{pack.name}</h3><div>{pack.stickers.map((item) => <button onClick={() => sendSticker(pack, item)} key={item.id}><img src={item.image} alt="" /></button>)}</div></section>)}</div>}</Modal> }
+  if (viewedStickerPack) { const added = data.profile.stickerPacks?.includes(viewedStickerPack.id); return <Modal title="Стикерпак" close={() => setViewedStickerPack(null)} wide><div className="viewed-sticker-pack"><header><div><h2>{viewedStickerPack.name}</h2><p>Автор: {viewedStickerPack.author?.name}</p></div><button className={added ? 'secondary' : 'primary'} disabled={added} onClick={() => addStickerPack(viewedStickerPack.id)}>{added ? <><Check />Уже добавлен</> : <><Plus />Добавить себе</>}</button></header><div>{viewedStickerPack.stickers.map((item) => <img src={item.image} alt="" key={item.id} />)}</div></div></Modal> }
 
   return <><main className="messages-shell panel"><aside><div className="chat-sidebar-title"><h2>Люди</h2></div>{contacts.length === 0 && <p className="no-conversations">Пока нет других зарегистрированных пользователей.</p>}{contacts.map((user) => <button className={selected === user.uid ? 'active' : ''} onClick={() => setSelected(user.uid)} key={user.uid}><Avatar profile={user} /><span><b>{user.name}</b><small>@{user.username}</small></span></button>)}</aside>{contact ? <section className="dialog"><header><Avatar profile={contact} /><div><b>{contact.name}</b><small>аккаунт Mostor</small></div><button className="call-start" onClick={() => startCall('audio')}><Phone size={18} /></button><button className="call-start" onClick={() => startCall('video')}><Video size={19} /></button></header><div className="message-list">{messages.length === 0 && <div className="dialog-empty"><MessageCircle /><p>Напишите первое сообщение</p></div>}{messages.map((message) => <ChatMessage message={message} mine={message.senderId === currentUser.uid} key={message.id} />)}</div>{uploadProgress > 0 && <div className="chat-upload"><i><em style={{ width: `${uploadProgress}%` }} /></i><span>{uploadProgress}%</span></div>}<form onSubmit={send}><button type="button" onClick={() => fileInput.current.click()}><Paperclip /></button><input ref={fileInput} hidden type="file" onChange={(event) => attachFile(event.target.files[0])} /><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Сообщение..." /><button className="send"><Send /></button></form></section> : <section className="dialog-placeholder"><MessageCircle /><h3>Выберите пользователя</h3></section>}</main>{incoming && <div className="incoming-call"><Avatar profile={incoming.caller} size={70} /><div><span>Входящий {incoming.mode === 'video' ? 'видеозвонок' : 'звонок'}</span><h3>{incoming.caller?.name}</h3></div><button className="accept" onClick={acceptCall}><Phone /></button><button className="reject" onClick={rejectCall}><PhoneOff /></button></div>}{call && <WebRTCCall call={call} currentUser={currentUser} close={() => setCall(null)} />}</>
 }
@@ -732,6 +738,32 @@ function ProfilePage({ data, update, currentUser, users }) {
 }
 
 function Preference({ label, text, active, toggle }) { return <button className="preference" onClick={toggle}><span><b>{label}</b><small>{text}</small></span><i className={active ? 'active' : ''}><em /></i></button> }
+
+function hexToRgb(hex) {
+  const clean = hex.replace('#', '')
+  return { r: parseInt(clean.slice(0, 2), 16) || 0, g: parseInt(clean.slice(2, 4), 16) || 0, b: parseInt(clean.slice(4, 6), 16) || 0 }
+}
+
+function rgbToHex({ r, g, b }) {
+  return `#${[r, g, b].map((value) => Math.max(0, Math.min(255, Number(value) || 0)).toString(16).padStart(2, '0')).join('')}`
+}
+
+function SettingsPage({ data, update }) {
+  const settings = data.settings
+  const accentRgb = hexToRgb(settings.accent || '#caff3d')
+  const backgroundRgb = hexToRgb(settings.background || '#0b0d0b')
+  const setSetting = (key, value) => update({ settings: { ...settings, [key]: value } })
+  const setRgb = (key, channel, value) => { const current = hexToRgb(settings[key]); current[channel] = value; setSetting(key, rgbToHex(current)) }
+  const presets = [
+    ['Кислотный', '#caff3d', '#0b0d0b'], ['Океан', '#41c7ff', '#07131a'], ['Закат', '#ff6b45', '#180c0a'], ['Фиолетовый', '#a77aff', '#100b19'], ['Моно', '#ffffff', '#101010'],
+  ]
+  const reset = () => update({ settings: { ...initialData.settings } })
+  return <main className="content-page settings-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR PERSONAL</span><h2>Настройки</h2><p>Настройте интерфейс под себя. Изменения применяются сразу.</p></div><button className="secondary" onClick={reset}>Сбросить</button></div><section className="theme-builder panel"><div className="theme-preview" style={{ '--preview-accent': settings.accent, '--preview-bg': settings.background }}><span>M</span><div><b>Mostor</b><small>Предпросмотр вашей темы</small><button>Акцентная кнопка</button></div></div><div className="theme-controls"><h3>Режим интерфейса</h3><div className="mode-picker"><button className={settings.themeMode === 'dark' ? 'active' : ''} onClick={() => setSetting('themeMode', 'dark')}>Темная</button><button className={settings.themeMode === 'light' ? 'active' : ''} onClick={() => setSetting('themeMode', 'light')}>Светлая</button></div><ColorControl title="Акцентный цвет" value={settings.accent} rgb={accentRgb} setValue={(value) => setSetting('accent', value)} setRgb={(channel, value) => setRgb('accent', channel, value)} /><ColorControl title="Цвет фона" value={settings.background} rgb={backgroundRgb} setValue={(value) => setSetting('background', value)} setRgb={(channel, value) => setRgb('background', channel, value)} /><label className="scale-control"><span><b>Масштаб интерфейса</b><small>{settings.scale}%</small></span><input type="range" min="85" max="115" step="5" value={settings.scale} onChange={(event) => setSetting('scale', Number(event.target.value))} /></label></div></section><section className="theme-presets"><h3>Готовые палитры</h3><div>{presets.map(([name, accent, background]) => <button onClick={() => update({ settings: { ...settings, accent, background, themeMode: 'dark' } })} key={name}><i style={{ background: `linear-gradient(135deg, ${accent} 50%, ${background} 50%)` }} /><span>{name}</span></button>)}</div></section><section className="preferences panel"><h3>Поведение приложения</h3><div className="preference-grid"><Preference label="Компактный режим" text="Меньше отступов" active={settings.compact} toggle={() => setSetting('compact', !settings.compact)} /><Preference label="Меньше анимаций" text="Снизить движение" active={settings.reduceMotion} toggle={() => setSetting('reduceMotion', !settings.reduceMotion)} /><Preference label="Автозапуск видео" text="Проигрывать при открытии" active={settings.autoplay} toggle={() => setSetting('autoplay', !settings.autoplay)} /><Preference label="Звуки интерфейса" text="Рингтоны и сигналы" active={settings.sounds} toggle={() => setSetting('sounds', !settings.sounds)} /><Preference label="Время сообщений" text="Показывать время" active={settings.timestamps} toggle={() => setSetting('timestamps', !settings.timestamps)} /></div></section></main>
+}
+
+function ColorControl({ title, value, rgb, setValue, setRgb }) {
+  return <div className="color-control"><header><b>{title}</b><label style={{ background: value }}><input type="color" value={value} onChange={(event) => setValue(event.target.value)} /></label><code>{value.toUpperCase()}</code></header><div>{['r', 'g', 'b'].map((channel) => <label key={channel}><span>{channel.toUpperCase()}</span><input type="range" min="0" max="255" value={rgb[channel]} onChange={(event) => setRgb(channel, Number(event.target.value))} /><input type="number" min="0" max="255" value={rgb[channel]} onChange={(event) => setRgb(channel, Number(event.target.value))} /></label>)}</div></div>
+}
 
 function IdentityEditor({ data, update, currentUser, users }) {
   const [username, setUsername] = useState(data.profile.username || '')
@@ -928,7 +960,8 @@ export default function App() {
   const titles = Object.fromEntries(navItems.map(([id, title]) => [id, title]))
   if (currentUser === undefined) return <div className="app-loading"><span>M</span><p>Загрузка Mostor...</p></div>
   if (!currentUser) return <AuthScreen />
-  return <div className="app-shell">
+  const themeStyle = { '--acid': data.settings.accent, '--bg': data.settings.themeMode === 'light' ? '#f3f5ef' : data.settings.background, '--panel': data.settings.themeMode === 'light' ? '#ffffff' : '#141714', '--panel2': data.settings.themeMode === 'light' ? '#e8ece5' : '#1b1f1b', '--line': data.settings.themeMode === 'light' ? '#ced5ca' : '#293029', '--muted': data.settings.themeMode === 'light' ? '#687268' : '#8d968d', '--white': data.settings.themeMode === 'light' ? '#151815' : '#f2f4ed', fontSize: `${data.settings.scale / 100}rem` }
+  return <div className={`app-shell theme-${data.settings.themeMode}`} style={themeStyle}>
     <div className={`mobile-drawer ${menu ? 'open' : ''}`} onClick={(e) => e.target === e.currentTarget && setMenu(false)}><Sidebar active={active} setActive={navigate} profile={data.profile} /></div>
     <Sidebar active={active} setActive={navigate} profile={data.profile} />
     <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={searchQuery} setQuery={setSearchQuery} openMenu={() => setMenu(true)} profile={data.profile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />
@@ -937,7 +970,7 @@ export default function App() {
       {active === 'video' && <FreeStorageNotice type="video" />}
       {active === 'games' && <GamesPage data={data} update={update} />}
       {active === 'gifts' && <GiftsPage data={data} update={update} />}
-      {active === 'messages' && <NetworkMessagesPage data={data} users={networkUsers} currentUser={currentUser} initialFriend={chatFriend} stickerPacks={stickerPacks} />}
+      {active === 'messages' && <NetworkMessagesPage data={data} update={update} users={networkUsers} currentUser={currentUser} initialFriend={chatFriend} stickerPacks={stickerPacks} />}
       {active === 'calls' && <CallsPage calls={[...outgoingCalls, ...incomingCalls].sort((a, b) => b.createdAt - a.createdAt)} users={networkUsers} currentUser={currentUser} profile={data.profile} />}
       {active === 'music' && <MusicPage tracks={musicTracks} setTracks={setMusicTracks} data={data} currentUser={currentUser} />}
       {active === 'status' && <StatusPage data={data} update={update} currentUser={currentUser} />}
@@ -945,6 +978,7 @@ export default function App() {
       {active === 'friends' && <FriendsPage data={data} update={update} openChat={openChat} />}
       {active === 'cloud' && <FreeStorageNotice type="cloud" />}
       {active === 'labs' && <LabsPage data={data} update={update} />}
+      {active === 'settings' && <SettingsPage data={data} update={update} />}
       {active === 'profile' && <><ProfilePage data={data} update={update} currentUser={currentUser} users={networkUsers} /><IdentityEditor data={data} update={update} currentUser={currentUser} users={networkUsers} /></>}
     </div>
     <nav className="mobile-nav">{navItems.slice(0, 5).map(([id,,Icon]) => <button className={active === id ? 'active' : ''} onClick={() => navigate(id)} key={id}><Icon /></button>)}</nav>
