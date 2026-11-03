@@ -4,14 +4,14 @@ import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query,
 import {
   ArrowLeft, Bell, Bookmark, Check, Cloud, Download, Film, FolderOpen, Gamepad2,
   FlaskConical, Gift, HardDrive, Heart, Home, Image, Menu, MessageCircle, MoreHorizontal,
-  Mic, MicOff, Paperclip, Pencil, Phone, PhoneOff, Play, Plus, Save, Search,
+  Mic, MicOff, Music2, Paperclip, Pause, Pencil, Phone, PhoneOff, Play, Plus, Save, Search,
   Send, Settings, ShoppingBag, Smile, Trophy, Trash2, Upload, UserPlus, Users,
   Video, VideoOff, X, Zap,
 } from 'lucide-react'
 import { auth, db } from './firebase'
 
 const initialData = {
-  profile: { name: 'Ян', username: 'yan', bio: 'Основатель Mostor', avatar: '' },
+  profile: { name: 'Ян', username: 'yan', bio: 'Основатель Mostor', avatar: '', statusMode: 'online', statusText: '' },
   posts: [],
   videos: [],
   channels: [],
@@ -44,6 +44,8 @@ const navItems = [
   ['gifts', 'Подарки', Gift],
   ['messages', 'Сообщения', MessageCircle],
   ['calls', 'Звонки', Phone],
+  ['music', 'Музыка', Music2],
+  ['status', 'Статус', Smile],
   ['friends', 'Друзья', UserPlus],
   ['cloud', 'Облако', Cloud],
   ['labs', 'Mostor Labs', FlaskConical],
@@ -143,6 +145,14 @@ function Avatar({ profile, size = 44 }) {
     : <span className="avatar avatar-letter" style={{ width: size, height: size, fontSize: size * .38 }}>{letter}</span>
 }
 
+const statusLabels = { online: 'В сети', busy: 'Занят', dnd: 'Не беспокоить', invisible: 'Невидимый' }
+
+function StatusBadge({ profile, compact = false }) {
+  const mode = profile?.statusMode || 'online'
+  if (mode === 'invisible' && compact) return <span className="user-status offline">Не в сети</span>
+  return <span className={`user-status ${mode}`}><i />{profile?.statusText || statusLabels[mode]}</span>
+}
+
 function Sidebar({ active, setActive, profile }) {
   return <aside className="sidebar">
     <button className="logo" onClick={() => setActive('feed')}><span>M</span>ostor<b>.</b></button>
@@ -173,6 +183,35 @@ function Empty({ icon: Icon, title, text, action, actionText }) {
 function FreeStorageNotice({ type }) {
   const video = type === 'video'
   return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">БЕСПЛАТНЫЙ РЕЖИМ</span><h2>{video ? 'Видеохостинг' : 'Облако'}</h2><p>Firebase Storage требует платный тариф Blaze.</p></div></div><Empty icon={video ? Video : Cloud} title={video ? 'Большие видео временно отключены' : 'Большие файлы временно отключены'} text="В бесплатной версии можно отправлять изображения и файлы до 600 КБ через сообщения. Они сохраняются прямо в Firestore и доступны собеседнику." /></main>
+}
+
+function StatusPage({ data, update, currentUser }) {
+  const [statusMode, setStatusMode] = useState(data.profile.statusMode || 'online')
+  const [statusText, setStatusText] = useState(data.profile.statusText || '')
+  const save = async () => {
+    const profile = { ...data.profile, statusMode, statusText: statusText.trim().slice(0, 80), statusUpdatedAt: Date.now() }
+    update({ profile })
+    await setDoc(doc(db, 'users', currentUser.uid), profile, { merge: true })
+  }
+  return <main className="content-page status-page"><div className="page-heading"><div><span className="eyebrow">НАСТРОЕНИЕ</span><h2>Ваш статус</h2><p>Покажите людям, чем вы заняты прямо сейчас.</p></div></div><section className="status-editor panel"><div className="status-preview"><Avatar profile={data.profile} size={72} /><div><h3>{data.profile.name}</h3><StatusBadge profile={{ ...data.profile, statusMode, statusText }} /></div></div><div className="status-modes">{Object.entries(statusLabels).map(([id, label]) => <button className={statusMode === id ? `active ${id}` : id} onClick={() => setStatusMode(id)} key={id}><i />{label}</button>)}</div><label className="field">Текст статуса<input maxLength="80" value={statusText} onChange={(event) => setStatusText(event.target.value)} placeholder="Например: Работаю над новым проектом" /><small>{statusText.length} / 80</small></label><div className="status-actions"><button className="secondary" onClick={() => setStatusText('')}>Очистить текст</button><button className="primary" onClick={save}><Save />Сохранить статус</button></div></section></main>
+}
+
+function MusicPage({ tracks, data, currentUser }) {
+  const [open, setOpen] = useState(false)
+  const [title, setTitle] = useState('')
+  const [artist, setArtist] = useState('')
+  const [url, setUrl] = useState('')
+  const [current, setCurrent] = useState(null)
+  const [playing, setPlaying] = useState(false)
+  const audio = useRef(null)
+  useEffect(() => { if (!audio.current || !current) return; audio.current.src = current.url; audio.current.play().then(() => setPlaying(true)).catch(() => setPlaying(false)) }, [current])
+  const addTrack = async () => {
+    if (!title.trim() || !url.trim()) return
+    await addDoc(collection(db, 'music'), { title: title.trim(), artist: artist.trim() || data.profile.name, url: url.trim(), uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() })
+    setTitle(''); setArtist(''); setUrl(''); setOpen(false)
+  }
+  const toggle = () => { if (!audio.current || !current) return; if (playing) audio.current.pause(); else audio.current.play(); setPlaying(!playing) }
+  return <main className="content-page music-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR MUSIC</span><h2>Музыка</h2><p>Общая библиотека треков пользователей Mostor.</p></div><button className="primary" onClick={() => setOpen(true)}><Plus />Добавить трек</button></div>{tracks.length === 0 ? <Empty icon={Music2} title="Музыки пока нет" text="Добавьте первый трек по прямой ссылке на MP3, OGG или другой аудиофайл." action={() => setOpen(true)} actionText="Добавить трек" /> : <div className="music-list panel">{tracks.map((track, index) => <article className={current?.id === track.id ? 'active' : ''} key={track.id}><span className="track-number">{String(index + 1).padStart(2, '0')}</span><button className="track-play" onClick={() => current?.id === track.id ? toggle() : setCurrent(track)}>{current?.id === track.id && playing ? <Pause /> : <Play fill="currentColor" />}</button><div><b>{track.title}</b><small>{track.artist} · добавил {track.author?.name}</small></div>{track.uid === currentUser.uid && <button className="track-delete" onClick={() => deleteDoc(doc(db, 'music', track.id))}><Trash2 /></button>}</article>)}</div>}<audio ref={audio} onEnded={() => setPlaying(false)} />{current && <div className="music-player"><button onClick={toggle}>{playing ? <Pause /> : <Play fill="currentColor" />}</button><div><b>{current.title}</b><small>{current.artist}</small></div><audio src={current.url} controls onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} /></div>}{open && <Modal title="Добавить музыку" close={() => setOpen(false)}><label className="field">Название<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Название трека" /></label><label className="field">Исполнитель<input value={artist} onChange={(event) => setArtist(event.target.value)} placeholder="Исполнитель" /></label><label className="field">Прямая ссылка на аудио<input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://example.com/song.mp3" /></label><p className="group-hint">Используйте прямую публичную ссылку на MP3, OGG или WAV. Ссылки на страницу YouTube не подходят.</p><button className="primary full" onClick={addTrack}>Добавить в библиотеку</button></Modal>}</main>
 }
 
 function AuthScreen() {
@@ -590,6 +629,7 @@ export default function App() {
   const [networkUsers, setNetworkUsers] = useState([])
   const [remoteVideos, setRemoteVideos] = useState([])
   const [remoteFiles, setRemoteFiles] = useState([])
+  const [musicTracks, setMusicTracks] = useState([])
   const [outgoingCalls, setOutgoingCalls] = useState([])
   const [incomingCalls, setIncomingCalls] = useState([])
   const [active, setActive] = useState('feed')
@@ -629,9 +669,10 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => setNetworkUsers(snapshot.docs.map((item) => ({ uid: item.id, ...item.data() }))))
+    const unsubMusic = onSnapshot(query(collection(db, 'music'), orderBy('createdAt', 'desc')), (snapshot) => setMusicTracks(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
     const unsubVideos = onSnapshot(query(collection(db, 'videos'), orderBy('createdAt', 'desc')), (snapshot) => setRemoteVideos(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
     const unsubFiles = onSnapshot(query(collection(db, 'files'), where('uid', '==', currentUser.uid)), (snapshot) => setRemoteFiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
-    return () => { unsubUsers(); unsubVideos(); unsubFiles() }
+    return () => { unsubUsers(); unsubMusic(); unsubVideos(); unsubFiles() }
   }, [currentUser])
   const createPost = async (post) => { const { id, fileId, ...publicPost } = post; await addDoc(collection(db, 'posts'), { ...publicPost, uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() }) }
   const deleteSharedPost = async (post) => { if (post.uid === currentUser.uid) await deleteDoc(doc(db, 'posts', post.id)) }
@@ -650,6 +691,8 @@ export default function App() {
       {active === 'gifts' && <GiftsPage data={data} update={update} />}
       {active === 'messages' && <NetworkMessagesPage data={data} users={networkUsers} currentUser={currentUser} />}
       {active === 'calls' && <CallsPage calls={[...outgoingCalls, ...incomingCalls].sort((a, b) => b.createdAt - a.createdAt)} users={networkUsers} currentUser={currentUser} profile={data.profile} />}
+      {active === 'music' && <MusicPage tracks={musicTracks} data={data} currentUser={currentUser} />}
+      {active === 'status' && <StatusPage data={data} update={update} currentUser={currentUser} />}
       {active === 'friends' && <FriendsPage data={data} update={update} openChat={openChat} />}
       {active === 'cloud' && <FreeStorageNotice type="cloud" />}
       {active === 'labs' && <LabsPage data={data} update={update} />}
