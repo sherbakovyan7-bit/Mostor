@@ -1,0 +1,8 @@
+{
+  "appId": "com.mostor.app",
+  "appName": "Mostor",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
