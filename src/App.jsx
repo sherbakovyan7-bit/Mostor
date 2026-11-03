@@ -140,9 +140,11 @@ function useFileUrl(fileId) {
 
 function Avatar({ profile, size = 44 }) {
   const letter = (profile?.name || '?').trim().charAt(0).toUpperCase()
-  return profile?.avatar
+  const content = profile?.avatar
     ? <img className="avatar" style={{ width: size, height: size }} src={profile.avatar} alt="" />
     : <span className="avatar avatar-letter" style={{ width: size, height: size, fontSize: size * .38 }}>{letter}</span>
+  if (!profile?.uid) return content
+  return <button className="avatar-button" onClick={() => window.dispatchEvent(new CustomEvent('mostor:profile', { detail: profile }))}>{content}</button>
 }
 
 const statusLabels = { online: 'В сети', busy: 'Занят', dnd: 'Не беспокоить', invisible: 'Невидимый' }
@@ -351,20 +353,24 @@ function FriendsPage({ data, update, openChat }) {
   return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">КОНТАКТЫ</span><h2>Друзья</h2><p>Добавляйте контакты и начинайте локальную переписку.</p></div><button className="primary" onClick={() => setOpen(true)}><UserPlus />Добавить друга</button></div>{data.friends.length === 0 ? <Empty icon={UserPlus} title="Список друзей пуст" text="Добавьте первый контакт. Для него автоматически станет доступен диалог." action={() => setOpen(true)} actionText="Добавить друга" /> : <div className="friends-grid">{data.friends.map((friend) => <article className="friend-card panel" key={friend.id}><Avatar profile={friend} size={58} /><div><h3>{friend.name}</h3><small>Локальный контакт</small></div><button onClick={() => openChat(friend.id)}><MessageCircle size={18} />Написать</button><button className="danger" onClick={() => remove(friend.id)}><Trash2 size={17} /></button></article>)}</div>}{open && <Modal title="Добавить друга" close={() => setOpen(false)}><label className="field">Имя<input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Имя друга" /></label><button className="primary full" onClick={add}>Добавить</button></Modal>}</main>
 }
 
-function NetworkMessagesPage({ data, users, currentUser }) {
+function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
   const contacts = users.filter((user) => user.uid !== currentUser.uid)
-  const [selected, setSelected] = useState(contacts[0]?.uid || '')
+  const [selected, setSelected] = useState(initialFriend || contacts[0]?.uid || '')
   const [messages, setMessages] = useState([])
   const [text, setText] = useState('')
   const [call, setCall] = useState(null)
   const [incoming, setIncoming] = useState(null)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [attachmentError, setAttachmentError] = useState('')
+  const [recording, setRecording] = useState(null)
+  const [recordSeconds, setRecordSeconds] = useState(0)
   const fileInput = useRef(null)
+  const recorderRef = useRef(null)
   const contact = contacts.find((user) => user.uid === selected)
   const chatId = selected ? [currentUser.uid, selected].sort().join('_') : ''
 
   useEffect(() => { if (!selected && contacts[0]) setSelected(contacts[0].uid) }, [contacts.length])
+  useEffect(() => { if (initialFriend) setSelected(initialFriend) }, [initialFriend])
   useEffect(() => {
     if (!chatId) { setMessages([]); return }
     return onSnapshot(query(collection(db, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc')), (snapshot) => setMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), time: item.data().createdAt?.toMillis?.() || Date.now() }))))
@@ -392,6 +398,49 @@ function NetworkMessagesPage({ data, users, currentUser }) {
     await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, attachment: { name: file.name, size: file.size, type: file.type, url: fileUrl }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
     setUploadProgress(100); setTimeout(() => setUploadProgress(0), 350); fileInput.current.value = ''
   }
+  const sendMediaBlob = async (blob, kind) => {
+    if (!contact) return
+    if (blob.size > 600 * 1024) { window.alert('Запись получилась слишком большой. Попробуйте короче.'); return }
+    const fileUrl = await new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(blob) })
+    await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: kind === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение' }, { merge: true })
+    await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, mediaMessage: { kind, type: blob.type, url: fileUrl, size: blob.size }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+  }
+  const stopRecording = () => { const active = recorderRef.current; if (!active) return; clearInterval(active.timer); if (active.recorder.state === 'recording') active.recorder.stop(); recorderRef.current = null }
+  const startRecording = async (kind) => {
+    if (recording || !contact) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: kind === 'circle' ? { width: 320, height: 320, facingMode: 'user' } : false })
+      const chunks = []
+      const options = kind === 'voice' ? { mimeType: 'audio/webm', audioBitsPerSecond: 48000 } : { mimeType: 'video/webm', videoBitsPerSecond: 280000, audioBitsPerSecond: 32000 }
+      const recorder = new MediaRecorder(stream, MediaRecorder.isTypeSupported(options.mimeType) ? options : undefined)
+      recorderRef.current = { recorder, stream, kind, timer: null }
+      recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data) }
+      recorder.onstop = async () => { stream.getTracks().forEach((track) => track.stop()); setRecording(null); setRecordSeconds(0); await sendMediaBlob(new Blob(chunks, { type: recorder.mimeType }), kind) }
+      recorder.start(250); setRecording(kind); setRecordSeconds(0)
+      recorderRef.current.timer = setInterval(() => setRecordSeconds((value) => value + 1), 1000)
+      setTimeout(() => { if (recorder.state === 'recording') stopRecording() }, 8000)
+    } catch { window.alert('Разрешите Mostor доступ к микрофону и камере.') }
+  }
+  useEffect(() => {
+    const form = document.querySelector('.dialog > form')
+    if (!form) return
+    const picker = form.querySelector('input[type="file"]')
+    if (picker) picker.accept = 'image/*,video/*,.pdf,.doc,.docx,.txt,.zip'
+    let voice = form.querySelector('.voice-record-button')
+    let circle = form.querySelector('.circle-record-button')
+    if (!voice) {
+      voice = document.createElement('button'); voice.type = 'button'; voice.className = 'voice-record-button'; form.insertBefore(voice, form.querySelector('input:not([type="file"])'))
+    }
+    if (!circle) {
+      circle = document.createElement('button'); circle.type = 'button'; circle.className = 'circle-record-button'; form.insertBefore(circle, form.querySelector('input:not([type="file"])'))
+    }
+    voice.textContent = recording === 'voice' ? `■ ${recordSeconds}с` : '🎙'
+    circle.textContent = recording === 'circle' ? `■ ${recordSeconds}с` : '●'
+    voice.classList.toggle('recording', recording === 'voice')
+    circle.classList.toggle('recording', recording === 'circle')
+    voice.onclick = () => recording === 'voice' ? stopRecording() : startRecording('voice')
+    circle.onclick = () => recording === 'circle' ? stopRecording() : startRecording('circle')
+  }, [chatId, recording, recordSeconds])
   const startCall = async (mode) => {
     if (!contact) return
     await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: mode === 'video' ? 'Видеозвонок' : 'Звонок' }, { merge: true })
@@ -407,8 +456,9 @@ function NetworkMessagesPage({ data, users, currentUser }) {
 
 function ChatMessage({ message, mine }) {
   const attachment = message.attachment
+  const media = message.mediaMessage
   const callText = message.systemType === 'missed' ? 'Пропущенный звонок' : mine ? 'Исходящий звонок' : 'Входящий звонок'
-  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>
+  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <audio className="voice-message" src={media.url} controls preload="metadata" />}{media?.kind === 'circle' && <video className="circle-message" src={media.url} controls playsInline preload="metadata" />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>
 }
 
 function CallsPage({ calls, users, currentUser, profile }) {
@@ -527,16 +577,46 @@ function CloudPage({ data, update, currentUser, remoteFiles }) {
   return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR CLOUD</span><h2>Облако</h2><p>Большие файлы хранятся в Firebase Storage и доступны с ваших устройств.</p></div><button className="primary" onClick={() => input.current.click()}><Upload />Загрузить файлы</button><input ref={input} hidden multiple type="file" onChange={(e) => upload([...e.target.files])} /></div>{progress > 0 && <div className="upload-progress panel"><span>Загрузка файла</span><i><em style={{ width: `${progress}%` }} /></i><b>{progress}%</b></div>}<div className="storage-meter panel"><HardDrive /><div><span><b>{formatBytes(used)}</b> занято</span><i><em style={{ width: `${Math.min(100, used / 104857600 * 100)}%` }} /></i><small>Личное Firebase-хранилище</small></div></div>{remoteFiles.length === 0 ? <Empty icon={Cloud} title="Облако пустое" text="Загружайте документы, изображения, архивы и другие большие файлы." action={() => input.current.click()} actionText="Загрузить файлы" /> : <div className="file-list panel">{remoteFiles.map((file) => <article key={file.id}><span><FolderOpen /></span><div><b>{file.name}</b><small>{formatBytes(file.size)} · {new Date(file.createdAt).toLocaleDateString('ru')}</small></div><button onClick={() => download(file)}><Download /></button><button onClick={() => remove(file)}><Trash2 /></button></article>)}</div>}</main>
 }
 
-function ProfilePage({ data, update, currentUser }) {
+function ProfilePage({ data, update, currentUser, users }) {
   const [draft, setDraft] = useState(data.profile)
   const avatarInput = useRef(null)
   const chooseAvatar = (file) => { if (!file) return; const reader = new FileReader(); reader.onload = () => setDraft((value) => ({ ...value, avatar: reader.result })); reader.readAsDataURL(file) }
-  const save = async () => { const profile = { ...draft, name: draft.name.trim() || 'Пользователь', username: draft.username.trim().replace(/\s/g, '') || 'user' }; update({ profile }); await updateProfile(currentUser, { displayName: profile.name, photoURL: profile.avatar || null }); await setDoc(doc(db, 'users', currentUser.uid), profile, { merge: true }) }
+  const [error, setError] = useState('')
+  const save = async () => {
+    const username = (draft.username || '').trim().replace(/^@/, '').replace(/\s/g, '').toLowerCase()
+    if (username && users.some((user) => user.uid !== currentUser.uid && user.username?.toLowerCase() === username)) { setError('Этот username уже занят.'); return }
+    const profile = { ...draft, uid: currentUser.uid, name: draft.name.trim() || 'Пользователь', username, phone: draft.phone?.trim() || '' }
+    setError(''); update({ profile }); await updateProfile(currentUser, { displayName: profile.name, photoURL: profile.avatar || null }); await setDoc(doc(db, 'users', currentUser.uid), profile, { merge: true })
+  }
   const toggleSetting = (key) => update({ settings: { ...data.settings, [key]: !data.settings[key] } })
   return <main className="content-page profile-page"><div className="profile-cover"><span>MOSTOR ID</span></div><section className="profile-settings panel"><div className="avatar-editor"><Avatar profile={draft} size={112} /><button onClick={() => avatarInput.current.click()}><Pencil size={17} /></button><input ref={avatarInput} hidden type="file" accept="image/*" onChange={(e) => chooseAvatar(e.target.files[0])} /></div><div className="profile-title"><h2>{draft.name || 'Пользователь'}</h2><p>@{draft.username || 'user'}</p></div><div className="settings-grid"><label className="field">Имя<input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label><label className="field">Имя пользователя<input value={draft.username} onChange={(e) => setDraft({ ...draft, username: e.target.value })} /></label><label className="field full-field">О себе<textarea value={draft.bio} onChange={(e) => setDraft({ ...draft, bio: e.target.value })} /></label></div><div className="profile-actions"><button className="secondary" onClick={() => setDraft({ ...draft, avatar: '' })}>Удалить фото</button><button className="primary" onClick={save}><Save size={18} />Сохранить изменения</button></div></section><section className="preferences panel"><h3>Настройки приложения</h3><div className="preference-grid"><Preference label="Компактный режим" text="Меньше отступов в ленте" active={data.settings.compact} toggle={() => toggleSetting('compact')} /><Preference label="Меньше анимаций" text="Снижает визуальное движение" active={data.settings.reduceMotion} toggle={() => toggleSetting('reduceMotion')} /><Preference label="Автозапуск видео" text="Запускать видео при открытии" active={data.settings.autoplay} toggle={() => toggleSetting('autoplay')} /><Preference label="Звуки интерфейса" text="Звуковые уведомления" active={data.settings.sounds} toggle={() => toggleSetting('sounds')} /><Preference label="Время сообщений" text="Показывать точное время" active={data.settings.timestamps} toggle={() => toggleSetting('timestamps')} /></div></section><section className="profile-dashboard"><article className="panel"><b>{data.savedPosts.length}</b><span>сохраненных постов</span></article><article className="panel"><b>{data.giftInventory.length}</b><span>подарков в коллекции</span></article><article className="panel"><b>{data.callHistory.length}</b><span>звонков</span></article><article className="panel"><b>{data.coins}</b><span>монет</span></article></section>{data.callHistory.length > 0 && <section className="call-history panel"><h3>История звонков</h3>{data.callHistory.slice(0, 8).map((call) => <article key={call.id}>{call.mode === 'video' ? <Video /> : <Phone />}<div><b>{call.target}</b><small>{new Date(call.createdAt).toLocaleString('ru')} · {call.duration} сек.</small></div><span>{call.status}</span></article>)}</section>}</main>
 }
 
 function Preference({ label, text, active, toggle }) { return <button className="preference" onClick={toggle}><span><b>{label}</b><small>{text}</small></span><i className={active ? 'active' : ''}><em /></i></button> }
+
+function IdentityEditor({ data, update, currentUser, users }) {
+  const [username, setUsername] = useState(data.profile.username || '')
+  const [phone, setPhone] = useState(data.profile.phone || '')
+  const [error, setError] = useState('')
+  const save = async () => {
+    const clean = username.trim().replace(/^@/, '').replace(/\s/g, '').toLowerCase()
+    if (clean && users.some((user) => user.uid !== currentUser.uid && user.username?.toLowerCase() === clean)) { setError('Этот username уже занят.'); return }
+    const profile = { ...data.profile, uid: currentUser.uid, username: clean, phone: phone.trim() }
+    setError(''); update({ profile }); await setDoc(doc(db, 'users', currentUser.uid), profile, { merge: true })
+  }
+  return <section className="identity-editor panel"><h3>Контакты и адрес профиля</h3><p>Оба поля необязательные. Username должен быть уникальным.</p><div className="settings-grid"><label className="field">Username<input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="например, yan" /></label><label className="field">Телефон<input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+7 900 000-00-00" /></label></div>{error && <p className="profile-error">{error}</p>}<button className="primary" onClick={save}><Save />Сохранить контакты</button></section>
+}
+
+function ProfileViewer({ person, own, data, update, close, openChat }) {
+  const [giftOpen, setGiftOpen] = useState(false)
+  const give = (gift) => {
+    if (data.coins < gift.price) return
+    if (own) update({ coins: data.coins - gift.price, giftInventory: [...data.giftInventory, { instanceId: crypto.randomUUID(), giftId: gift.id, boughtAt: Date.now() }] })
+    else update({ coins: data.coins - gift.price, sentGifts: [{ id: crypto.randomUUID(), giftId: gift.id, friendName: person.name, sentAt: Date.now() }, ...data.sentGifts] })
+    setGiftOpen(false)
+  }
+  return <Modal title={own ? 'Мой профиль' : 'Профиль пользователя'} close={close} wide><div className="public-profile"><div className="public-profile-cover" /><Avatar profile={{ ...person, uid: '' }} size={104} /><h2>{person.name}</h2>{person.username && <span>@{person.username}</span>}<StatusBadge profile={person} /><p>{person.bio || 'Пользователь Mostor'}</p>{person.phone && <a href={`tel:${person.phone}`}>{person.phone}</a>}<div className="public-profile-actions">{!own && <button className="primary" onClick={() => { close(); openChat(person.uid) }}><MessageCircle />Написать</button>}<button className="secondary" onClick={() => setGiftOpen(!giftOpen)}><Gift />{own ? 'Купить себе подарок' : 'Подарить'}</button></div>{giftOpen && <div className="profile-gift-grid">{giftCatalog.map((gift) => <button disabled={data.coins < gift.price} onClick={() => give(gift)} key={gift.id}><span>{gift.symbol}</span><b>{gift.name}</b><small>● {gift.price}</small></button>)}</div>}</div></Modal>
+}
 
 function LabsPage({ data, update }) {
   const [query, setQuery] = useState('')
@@ -639,6 +719,7 @@ export default function App() {
   const [chatFriend, setChatFriend] = useState('')
   const [selectedVideo, setSelectedVideo] = useState('')
   const [notificationOpen, setNotificationOpen] = useState(false)
+  const [viewedProfile, setViewedProfile] = useState(null)
   useEffect(() => {
     const viewport = window.visualViewport
     const updateHeight = () => document.documentElement.style.setProperty('--app-height', `${viewport?.height || window.innerHeight}px`)
@@ -647,13 +728,18 @@ export default function App() {
     window.addEventListener('resize', updateHeight)
     return () => { viewport?.removeEventListener('resize', updateHeight); window.removeEventListener('resize', updateHeight) }
   }, [])
+  useEffect(() => {
+    const showProfile = (event) => setViewedProfile(event.detail)
+    window.addEventListener('mostor:profile', showProfile)
+    return () => window.removeEventListener('mostor:profile', showProfile)
+  }, [])
   const navigate = (page) => { setActive(page); if (page !== 'video') setSelectedVideo(''); setMenu(false); window.scrollTo(0, 0) }
   useEffect(() => onAuthStateChanged(auth, async (user) => {
     setCurrentUser(user || null)
     if (!user) return
     const snapshot = await getDoc(doc(db, 'users', user.uid))
-    if (snapshot.exists()) update({ profile: { ...initialData.profile, ...snapshot.data() } })
-    else { const profile = { name: user.displayName || 'Пользователь', username: user.email?.split('@')[0] || 'user', email: user.email, avatar: user.photoURL || '', bio: 'Новый пользователь Mostor' }; await setDoc(doc(db, 'users', user.uid), profile); update({ profile }) }
+    if (snapshot.exists()) update({ profile: { ...initialData.profile, ...snapshot.data(), uid: user.uid } })
+    else { const profile = { uid: user.uid, name: user.displayName || 'Пользователь', username: '', phone: '', email: user.email, avatar: user.photoURL || '', bio: 'Новый пользователь Mostor', statusMode: 'online', statusText: '' }; await setDoc(doc(db, 'users', user.uid), profile); update({ profile }) }
   }), [])
   useEffect(() => {
     if (!currentUser) { setSharedPosts([]); return }
@@ -689,17 +775,18 @@ export default function App() {
       {active === 'video' && <FreeStorageNotice type="video" />}
       {active === 'games' && <GamesPage data={data} update={update} />}
       {active === 'gifts' && <GiftsPage data={data} update={update} />}
-      {active === 'messages' && <NetworkMessagesPage data={data} users={networkUsers} currentUser={currentUser} />}
+      {active === 'messages' && <NetworkMessagesPage data={data} users={networkUsers} currentUser={currentUser} initialFriend={chatFriend} />}
       {active === 'calls' && <CallsPage calls={[...outgoingCalls, ...incomingCalls].sort((a, b) => b.createdAt - a.createdAt)} users={networkUsers} currentUser={currentUser} profile={data.profile} />}
       {active === 'music' && <MusicPage tracks={musicTracks} data={data} currentUser={currentUser} />}
       {active === 'status' && <StatusPage data={data} update={update} currentUser={currentUser} />}
       {active === 'friends' && <FriendsPage data={data} update={update} openChat={openChat} />}
       {active === 'cloud' && <FreeStorageNotice type="cloud" />}
       {active === 'labs' && <LabsPage data={data} update={update} />}
-      {active === 'profile' && <ProfilePage data={data} update={update} currentUser={currentUser} />}
+      {active === 'profile' && <><ProfilePage data={data} update={update} currentUser={currentUser} users={networkUsers} /><IdentityEditor data={data} update={update} currentUser={currentUser} users={networkUsers} /></>}
     </div>
     <nav className="mobile-nav">{navItems.slice(0, 5).map(([id,,Icon]) => <button className={active === id ? 'active' : ''} onClick={() => navigate(id)} key={id}><Icon /></button>)}</nav>
     {composer && <PostComposer profile={data.profile} channels={data.channels} close={() => setComposer(false)} onCreate={createPost} />}
     {notificationOpen && <Modal title="Уведомления" close={() => setNotificationOpen(false)}>{data.notifications.length === 0 ? <div className="notification-empty"><Bell /><p>Новых уведомлений нет.</p></div> : <div className="notification-list">{data.notifications.map((item) => <article key={item.id}><Bell /><div><b>{item.title}</b><small>{item.text}</small></div></article>)}</div>}</Modal>}
+    {viewedProfile && <ProfileViewer person={viewedProfile} own={viewedProfile.uid === currentUser.uid} data={data} update={update} close={() => setViewedProfile(null)} openChat={(id) => { setViewedProfile(null); setChatFriend(id); navigate('messages') }} />}
   </div>
 }
