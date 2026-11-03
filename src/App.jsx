@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth'
-import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore'
+import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore'
 import {
   ArrowLeft, Bell, Bookmark, Check, Cloud, Download, Film, FolderOpen, Gamepad2,
   FlaskConical, Gift, HardDrive, Heart, Home, Image, Menu, MessageCircle, MoreHorizontal,
@@ -46,6 +46,7 @@ const navItems = [
   ['calls', 'Звонки', Phone],
   ['music', 'Музыка', Music2],
   ['status', 'Статус', Smile],
+  ['stickers', 'Стикеры', Smile],
   ['friends', 'Друзья', UserPlus],
   ['cloud', 'Облако', Cloud],
   ['labs', 'Mostor Labs', FlaskConical],
@@ -198,7 +199,7 @@ function StatusPage({ data, update, currentUser }) {
   return <main className="content-page status-page"><div className="page-heading"><div><span className="eyebrow">НАСТРОЕНИЕ</span><h2>Ваш статус</h2><p>Покажите людям, чем вы заняты прямо сейчас.</p></div></div><section className="status-editor panel"><div className="status-preview"><Avatar profile={data.profile} size={72} /><div><h3>{data.profile.name}</h3><StatusBadge profile={{ ...data.profile, statusMode, statusText }} /></div></div><div className="status-modes">{Object.entries(statusLabels).map(([id, label]) => <button className={statusMode === id ? `active ${id}` : id} onClick={() => setStatusMode(id)} key={id}><i />{label}</button>)}</div><label className="field">Текст статуса<input maxLength="80" value={statusText} onChange={(event) => setStatusText(event.target.value)} placeholder="Например: Работаю над новым проектом" /><small>{statusText.length} / 80</small></label><div className="status-actions"><button className="secondary" onClick={() => setStatusText('')}>Очистить текст</button><button className="primary" onClick={save}><Save />Сохранить статус</button></div></section></main>
 }
 
-function MusicPage({ tracks, data, currentUser }) {
+function MusicPage({ tracks, setTracks, data, currentUser }) {
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState('')
   const [artist, setArtist] = useState('')
@@ -209,8 +210,12 @@ function MusicPage({ tracks, data, currentUser }) {
   useEffect(() => { if (!audio.current || !current) return; audio.current.src = current.url; audio.current.play().then(() => setPlaying(true)).catch(() => setPlaying(false)) }, [current])
   const addTrack = async () => {
     if (!title.trim() || !url.trim()) return
-    await addDoc(collection(db, 'music'), { title: title.trim(), artist: artist.trim() || data.profile.name, url: url.trim(), uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() })
+    const trackRef = doc(collection(db, 'music'))
+    const track = { id: trackRef.id, title: title.trim(), artist: artist.trim() || data.profile.name, url: url.trim(), uid: currentUser.uid, author: data.profile, createdAt: Date.now(), pending: true }
+    setTracks((items) => [track, ...items.filter((item) => item.id !== track.id)])
     setTitle(''); setArtist(''); setUrl(''); setOpen(false)
+    try { await setDoc(trackRef, { ...track, id: undefined, pending: undefined, createdAt: serverTimestamp() }) }
+    catch (error) { setTracks((items) => items.filter((item) => item.id !== track.id)); window.alert(`Не удалось добавить трек: ${error.message}`) }
   }
   const toggle = () => { if (!audio.current || !current) return; if (playing) audio.current.pause(); else audio.current.play(); setPlaying(!playing) }
   return <main className="content-page music-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR MUSIC</span><h2>Музыка</h2><p>Общая библиотека треков пользователей Mostor.</p></div><button className="primary" onClick={() => setOpen(true)}><Plus />Добавить трек</button></div>{tracks.length === 0 ? <Empty icon={Music2} title="Музыки пока нет" text="Добавьте первый трек по прямой ссылке на MP3, OGG или другой аудиофайл." action={() => setOpen(true)} actionText="Добавить трек" /> : <div className="music-list panel">{tracks.map((track, index) => <article className={current?.id === track.id ? 'active' : ''} key={track.id}><span className="track-number">{String(index + 1).padStart(2, '0')}</span><button className="track-play" onClick={() => current?.id === track.id ? toggle() : setCurrent(track)}>{current?.id === track.id && playing ? <Pause /> : <Play fill="currentColor" />}</button><div><b>{track.title}</b><small>{track.artist} · добавил {track.author?.name}</small></div>{track.uid === currentUser.uid && <button className="track-delete" onClick={() => deleteDoc(doc(db, 'music', track.id))}><Trash2 /></button>}</article>)}</div>}<audio ref={audio} onEnded={() => setPlaying(false)} />{current && <div className="music-player"><button onClick={toggle}>{playing ? <Pause /> : <Play fill="currentColor" />}</button><div><b>{current.title}</b><small>{current.artist}</small></div><audio src={current.url} controls onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} /></div>}{open && <Modal title="Добавить музыку" close={() => setOpen(false)}><label className="field">Название<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Название трека" /></label><label className="field">Исполнитель<input value={artist} onChange={(event) => setArtist(event.target.value)} placeholder="Исполнитель" /></label><label className="field">Прямая ссылка на аудио<input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://example.com/song.mp3" /></label><p className="group-hint">Используйте прямую публичную ссылку на MP3, OGG или WAV. Ссылки на страницу YouTube не подходят.</p><button className="primary full" onClick={addTrack}>Добавить в библиотеку</button></Modal>}</main>
@@ -353,7 +358,7 @@ function FriendsPage({ data, update, openChat }) {
   return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">КОНТАКТЫ</span><h2>Друзья</h2><p>Добавляйте контакты и начинайте локальную переписку.</p></div><button className="primary" onClick={() => setOpen(true)}><UserPlus />Добавить друга</button></div>{data.friends.length === 0 ? <Empty icon={UserPlus} title="Список друзей пуст" text="Добавьте первый контакт. Для него автоматически станет доступен диалог." action={() => setOpen(true)} actionText="Добавить друга" /> : <div className="friends-grid">{data.friends.map((friend) => <article className="friend-card panel" key={friend.id}><Avatar profile={friend} size={58} /><div><h3>{friend.name}</h3><small>Локальный контакт</small></div><button onClick={() => openChat(friend.id)}><MessageCircle size={18} />Написать</button><button className="danger" onClick={() => remove(friend.id)}><Trash2 size={17} /></button></article>)}</div>}{open && <Modal title="Добавить друга" close={() => setOpen(false)}><label className="field">Имя<input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Имя друга" /></label><button className="primary full" onClick={add}>Добавить</button></Modal>}</main>
 }
 
-function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
+function NetworkMessagesPage({ data, users, currentUser, initialFriend, stickerPacks }) {
   const contacts = users.filter((user) => user.uid !== currentUser.uid)
   const [selected, setSelected] = useState(initialFriend || contacts[0]?.uid || '')
   const [messages, setMessages] = useState([])
@@ -365,6 +370,7 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
   const [recording, setRecording] = useState(null)
   const [recordSeconds, setRecordSeconds] = useState(0)
   const [circlePreview, setCirclePreview] = useState(null)
+  const [stickersOpen, setStickersOpen] = useState(false)
   const fileInput = useRef(null)
   const recorderRef = useRef(null)
   const contact = contacts.find((user) => user.uid === selected)
@@ -376,17 +382,35 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
     if (!chatId) { setMessages([]); return }
     return onSnapshot(query(collection(db, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc')), (snapshot) => setMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), time: item.data().createdAt?.toMillis?.() || Date.now() }))))
   }, [chatId])
+  useEffect(() => {
+    if (!chatId) return
+    messages.filter((message) => message.senderId !== currentUser.uid && !message.readBy?.includes(currentUser.uid)).forEach((message) => updateDoc(doc(db, 'chats', chatId, 'messages', message.id), { readBy: arrayUnion(currentUser.uid) }).catch(() => {}))
+  }, [chatId, messages.length, currentUser.uid])
   useEffect(() => onSnapshot(query(collection(db, 'calls'), where('calleeId', '==', currentUser.uid), where('status', '==', 'ringing')), (snapshot) => {
     const item = snapshot.docs[0]
     setIncoming(item ? { id: item.id, ...item.data() } : null)
   }), [currentUser.uid])
+  useEffect(() => {
+    if (!incoming) return
+    navigator.vibrate?.([400, 250, 400, 800])
+    let context
+    let interval
+    try {
+      context = new (window.AudioContext || window.webkitAudioContext)()
+      const ring = () => [659, 784, 988].forEach((frequency, index) => { const oscillator = context.createOscillator(); const gain = context.createGain(); oscillator.frequency.value = frequency; gain.gain.setValueAtTime(.0001, context.currentTime); gain.gain.exponentialRampToValueAtTime(.12, context.currentTime + .02); gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + .25); oscillator.connect(gain).connect(context.destination); oscillator.start(context.currentTime + index * .18); oscillator.stop(context.currentTime + index * .18 + .3) })
+      ring(); interval = setInterval(ring, 1800)
+    } catch {}
+    return () => { clearInterval(interval); context?.close(); navigator.vibrate?.(0) }
+  }, [incoming?.id])
 
   const send = async (event) => {
     event.preventDefault()
     if (!text.trim() || !contact) return
-    await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: text.trim() }, { merge: true })
-    await addDoc(collection(db, 'chats', chatId, 'messages'), { text: text.trim(), senderId: currentUser.uid, author: data.profile.name, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
-    setText('')
+    const messageRef = doc(collection(db, 'chats', chatId, 'messages'))
+    const message = { id: messageRef.id, text: text.trim(), senderId: currentUser.uid, author: data.profile.name, time: Date.now(), readBy: [currentUser.uid], pending: true }
+    setMessages((items) => [...items.filter((item) => item.id !== message.id), message]); setText('')
+    try { const replied = [...messages].reverse().find((item) => item.senderId === contact.uid && !item.repliedBy?.includes(currentUser.uid)); if (replied) await updateDoc(doc(db, 'chats', chatId, 'messages', replied.id), { repliedBy: arrayUnion(currentUser.uid) }); await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: message.text }, { merge: true }); await setDoc(messageRef, { text: message.text, senderId: currentUser.uid, author: data.profile.name, createdAt: serverTimestamp(), readBy: [currentUser.uid], repliedBy: [] }) }
+    catch (error) { setMessages((items) => items.filter((item) => item.id !== message.id)); window.alert(`Не удалось отправить сообщение: ${error.message}`) }
   }
   const attachFile = async (file) => {
     if (!file || !contact) return
@@ -395,8 +419,10 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
     setUploadProgress(25)
     const fileUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file) })
     setUploadProgress(70)
+    const messageRef = doc(collection(db, 'chats', chatId, 'messages')); const attachment = { name: file.name, size: file.size, type: file.type, url: fileUrl }
+    setMessages((items) => [...items, { id: messageRef.id, text: '', senderId: currentUser.uid, author: data.profile.name, attachment, time: Date.now(), pending: true }])
     await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: `Файл: ${file.name}` }, { merge: true })
-    await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, attachment: { name: file.name, size: file.size, type: file.type, url: fileUrl }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+    await setDoc(messageRef, { text: '', senderId: currentUser.uid, author: data.profile.name, attachment, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
     setUploadProgress(100); setTimeout(() => setUploadProgress(0), 350); fileInput.current.value = ''
   }
   const sendMediaBlob = async (blob, kind) => {
@@ -408,8 +434,10 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
       let binary = ''
       for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
       const base64 = btoa(binary)
+      const messageRef = doc(collection(db, 'chats', chatId, 'messages')); const mediaMessage = { kind, type: blob.type, base64, size: blob.size }
+      setMessages((items) => [...items, { id: messageRef.id, text: '', senderId: currentUser.uid, author: data.profile.name, mediaMessage, time: Date.now(), pending: true }])
       await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: kind === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение' }, { merge: true })
-      await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, mediaMessage: { kind, type: blob.type, base64, size: blob.size }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+      await setDoc(messageRef, { text: '', senderId: currentUser.uid, author: data.profile.name, mediaMessage, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
     } catch (error) { window.alert(error.code === 'permission-denied' ? 'Обновите Firestore Rules для отправки медиа.' : `Не удалось отправить запись: ${error.message}`) }
   }
   const stopRecording = () => { const active = recorderRef.current; if (!active) return; clearInterval(active.timer); if (active.recorder.state === 'recording') active.recorder.stop(); recorderRef.current = null }
@@ -452,6 +480,9 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
     if (!circle) {
       circle = document.createElement('button'); circle.type = 'button'; circle.className = 'circle-record-button'; form.insertBefore(circle, form.querySelector('input:not([type="file"])'))
     }
+    let sticker = form.querySelector('.sticker-picker-button')
+    if (!sticker) { sticker = document.createElement('button'); sticker.type = 'button'; sticker.className = 'sticker-picker-button'; sticker.textContent = '☺'; form.insertBefore(sticker, form.querySelector('input:not([type="file"])')) }
+    sticker.onclick = () => setStickersOpen(true)
     voice.textContent = recording === 'voice' ? `■ ${recordSeconds}с` : '🎙'
     circle.textContent = recording === 'circle' ? `■ ${recordSeconds}с` : '●'
     voice.classList.toggle('recording', recording === 'voice')
@@ -466,10 +497,19 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
     const callRef = await addDoc(collection(db, 'calls'), { callerId: currentUser.uid, caller: data.profile, calleeId: contact.uid, callee: contact, mode, status: 'ringing', chatId, messageId: messageRef.id, createdAt: serverTimestamp() })
     setCall({ id: callRef.id, mode, target: contact, role: 'caller' })
   }
+  const sendSticker = async (pack, sticker) => {
+    if (!contact) return
+    const messageRef = doc(collection(db, 'chats', chatId, 'messages'))
+    const payload = { packId: pack.id, id: sticker.id, image: sticker.image, name: sticker.name || pack.name }
+    setMessages((items) => [...items, { id: messageRef.id, senderId: currentUser.uid, author: data.profile.name, sticker: payload, time: Date.now(), readBy: [currentUser.uid], repliedBy: [], pending: true }]); setStickersOpen(false)
+    await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: 'Стикер' }, { merge: true })
+    await setDoc(messageRef, { text: '', senderId: currentUser.uid, author: data.profile.name, sticker: payload, createdAt: serverTimestamp(), readBy: [currentUser.uid], repliedBy: [] })
+  }
   const acceptCall = () => { setCall({ id: incoming.id, mode: incoming.mode, target: incoming.caller, role: 'callee' }); setIncoming(null) }
   const rejectCall = async () => { await updateDoc(doc(db, 'calls', incoming.id), { status: 'missed', endedAt: serverTimestamp() }); if (incoming.chatId && incoming.messageId) await updateDoc(doc(db, 'chats', incoming.chatId, 'messages', incoming.messageId), { systemType: 'missed' }); setIncoming(null) }
 
   if (circlePreview) return <Modal title="Предпросмотр кружка" close={() => { URL.revokeObjectURL(circlePreview.url); setCirclePreview(null) }}><div className="circle-preview"><video src={circlePreview.url} controls autoPlay loop muted playsInline onError={() => window.alert('Браузер не может воспроизвести запись. Переснимите кружок или отправьте видео через скрепку.')} /><p>Проверьте, что видео снялось, затем отправьте.</p><div><button className="secondary" onClick={() => { URL.revokeObjectURL(circlePreview.url); setCirclePreview(null); setTimeout(() => startRecording('circle'), 0) }}>Переснять</button><button className="primary" onClick={async () => { await sendMediaBlob(circlePreview.blob, 'circle'); URL.revokeObjectURL(circlePreview.url); setCirclePreview(null) }}><Send />Отправить</button></div></div></Modal>
+  if (stickersOpen) { const owned = stickerPacks.filter((pack) => data.profile.stickerPacks?.includes(pack.id)); return <Modal title="Стикеры" close={() => setStickersOpen(false)} wide>{owned.length === 0 ? <div className="notification-empty"><Smile /><p>Добавьте стикерпак в разделе «Стикеры».</p></div> : <div className="chat-sticker-picker">{owned.map((pack) => <section key={pack.id}><h3>{pack.name}</h3><div>{pack.stickers.map((item) => <button onClick={() => sendSticker(pack, item)} key={item.id}><img src={item.image} alt="" /></button>)}</div></section>)}</div>}</Modal> }
 
   return <><main className="messages-shell panel"><aside><div className="chat-sidebar-title"><h2>Люди</h2></div>{contacts.length === 0 && <p className="no-conversations">Пока нет других зарегистрированных пользователей.</p>}{contacts.map((user) => <button className={selected === user.uid ? 'active' : ''} onClick={() => setSelected(user.uid)} key={user.uid}><Avatar profile={user} /><span><b>{user.name}</b><small>@{user.username}</small></span></button>)}</aside>{contact ? <section className="dialog"><header><Avatar profile={contact} /><div><b>{contact.name}</b><small>аккаунт Mostor</small></div><button className="call-start" onClick={() => startCall('audio')}><Phone size={18} /></button><button className="call-start" onClick={() => startCall('video')}><Video size={19} /></button></header><div className="message-list">{messages.length === 0 && <div className="dialog-empty"><MessageCircle /><p>Напишите первое сообщение</p></div>}{messages.map((message) => <ChatMessage message={message} mine={message.senderId === currentUser.uid} key={message.id} />)}</div>{uploadProgress > 0 && <div className="chat-upload"><i><em style={{ width: `${uploadProgress}%` }} /></i><span>{uploadProgress}%</span></div>}<form onSubmit={send}><button type="button" onClick={() => fileInput.current.click()}><Paperclip /></button><input ref={fileInput} hidden type="file" onChange={(event) => attachFile(event.target.files[0])} /><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Сообщение..." /><button className="send"><Send /></button></form></section> : <section className="dialog-placeholder"><MessageCircle /><h3>Выберите пользователя</h3></section>}</main>{incoming && <div className="incoming-call"><Avatar profile={incoming.caller} size={70} /><div><span>Входящий {incoming.mode === 'video' ? 'видеозвонок' : 'звонок'}</span><h3>{incoming.caller?.name}</h3></div><button className="accept" onClick={acceptCall}><Phone /></button><button className="reject" onClick={rejectCall}><PhoneOff /></button></div>}{call && <WebRTCCall call={call} currentUser={currentUser} close={() => setCall(null)} />}</>
 }
@@ -478,7 +518,8 @@ function ChatMessage({ message, mine }) {
   const attachment = message.attachment
   const media = message.mediaMessage
   const callText = message.systemType === 'missed' ? 'Пропущенный звонок' : mine ? 'Исходящий звонок' : 'Входящий звонок'
-  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <MediaAudio media={media} />}{media?.kind === 'circle' && <CircleMessage media={media} />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>
+  const delivery = mine ? (message.repliedBy?.length ? '✓✓✓' : message.readBy?.length > 1 ? '✓✓' : '✓') : ''
+  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{message.sticker && <img className="chat-sticker" src={message.sticker.image} alt={message.sticker.name || 'Стикер'} />}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <MediaAudio media={media} />}{media?.kind === 'circle' && <CircleMessage media={media} />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}{delivery && <b className="delivery-checks">{delivery}</b>}</small></div>
 }
 
 function mediaToBlob(media) {
@@ -675,6 +716,21 @@ function ProfileViewer({ person, own, data, update, close, openChat }) {
   return <Modal title={own ? 'Мой профиль' : 'Профиль пользователя'} close={close} wide><div className="public-profile"><div className="public-profile-cover" /><Avatar profile={{ ...person, uid: '' }} size={104} /><h2>{person.name}</h2>{person.username && <span>@{person.username}</span>}<StatusBadge profile={person} /><p>{person.bio || 'Пользователь Mostor'}</p>{person.phone && <a href={`tel:${person.phone}`}>{person.phone}</a>}<div className="public-profile-actions">{!own && <button className="primary" onClick={() => { close(); openChat(person.uid) }}><MessageCircle />Написать</button>}<button className="secondary" onClick={() => setGiftOpen(!giftOpen)}><Gift />{own ? 'Купить себе подарок' : 'Подарить'}</button></div>{giftOpen && <div className="profile-gift-grid">{giftCatalog.map((gift) => <button disabled={data.coins < gift.price} onClick={() => give(gift)} key={gift.id}><span>{gift.symbol}</span><b>{gift.name}</b><small>● {gift.price}</small></button>)}</div>}</div></Modal>
 }
 
+function StickersPage({ packs, data, update, currentUser }) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [stickers, setStickers] = useState([])
+  const owned = data.profile.stickerPacks || []
+  const prepareImages = async (files) => {
+    const selected = [...files].slice(0, 6)
+    const images = await Promise.all(selected.map((file) => new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => { const image = new window.Image(); image.onload = () => { const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256; const context = canvas.getContext('2d'); context.clearRect(0, 0, 256, 256); const scale = Math.min(240 / image.width, 240 / image.height); const width = image.width * scale; const height = image.height * scale; context.drawImage(image, (256 - width) / 2, (256 - height) / 2, width, height); resolve({ id: crypto.randomUUID(), image: canvas.toDataURL('image/webp', .62), name: file.name }) }; image.src = reader.result }; reader.readAsDataURL(file) })))
+    setStickers(images)
+  }
+  const createPack = async () => { if (!name.trim() || !stickers.length) return; await addDoc(collection(db, 'stickerPacks'), { name: name.trim(), stickers, uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() }); setName(''); setStickers([]); setOpen(false) }
+  const togglePack = async (packId) => { const next = owned.includes(packId) ? owned.filter((id) => id !== packId) : [...owned, packId]; const profile = { ...data.profile, stickerPacks: next }; update({ profile }); await setDoc(doc(db, 'users', currentUser.uid), { stickerPacks: next }, { merge: true }) }
+  return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR STICKERS</span><h2>Стикеры</h2><p>Создавайте собственные наборы и добавляйте паки сообщества.</p></div><button className="primary" onClick={() => setOpen(true)}><Plus />Создать стикерпак</button></div>{packs.length === 0 ? <Empty icon={Smile} title="Стикерпаков пока нет" text="Создайте первый пак из своих изображений." action={() => setOpen(true)} actionText="Создать пак" /> : <div className="sticker-pack-grid">{packs.map((pack) => <article className="sticker-pack panel" key={pack.id}><header><div><h3>{pack.name}</h3><small>Автор: {pack.author?.name}</small></div><button className={owned.includes(pack.id) ? 'added' : ''} onClick={() => togglePack(pack.id)}>{owned.includes(pack.id) ? <><Check />Добавлен</> : <><Plus />Добавить</>}</button></header><div>{pack.stickers.map((sticker) => <img src={sticker.image} alt="" key={sticker.id} />)}</div>{pack.uid === currentUser.uid && <button className="delete-pack" onClick={() => deleteDoc(doc(db, 'stickerPacks', pack.id))}><Trash2 />Удалить пак</button>}</article>)}</div>}{open && <Modal title="Новый стикерпак" close={() => setOpen(false)} wide><label className="field">Название<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Название пака" /></label><label className="sticker-upload"><Image /><span>Выбрать до 6 изображений</span><input hidden type="file" multiple accept="image/*" onChange={(event) => prepareImages(event.target.files)} /></label>{stickers.length > 0 && <div className="sticker-preview-grid">{stickers.map((sticker) => <img src={sticker.image} alt="" key={sticker.id} />)}</div>}<button className="primary full" disabled={!name.trim() || !stickers.length} onClick={createPack}>Опубликовать стикерпак</button></Modal>}</main>
+}
+
 function LabsPage({ data, update }) {
   const [query, setQuery] = useState('')
   const [group, setGroup] = useState('Все')
@@ -767,6 +823,7 @@ export default function App() {
   const [remoteVideos, setRemoteVideos] = useState([])
   const [remoteFiles, setRemoteFiles] = useState([])
   const [musicTracks, setMusicTracks] = useState([])
+  const [stickerPacks, setStickerPacks] = useState([])
   const [outgoingCalls, setOutgoingCalls] = useState([])
   const [incomingCalls, setIncomingCalls] = useState([])
   const [active, setActive] = useState('feed')
@@ -815,11 +872,18 @@ export default function App() {
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => setNetworkUsers(snapshot.docs.map((item) => ({ uid: item.id, ...item.data() }))), (error) => { if (error.code !== 'permission-denied') console.error(error) })
     const ignoreDenied = (error) => { if (error.code !== 'permission-denied') console.error(error) }
     const unsubMusic = onSnapshot(query(collection(db, 'music'), orderBy('createdAt', 'desc')), (snapshot) => setMusicTracks(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
+    const unsubStickers = onSnapshot(query(collection(db, 'stickerPacks'), orderBy('createdAt', 'desc')), (snapshot) => setStickerPacks(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), ignoreDenied)
     const unsubVideos = onSnapshot(query(collection(db, 'videos'), orderBy('createdAt', 'desc')), (snapshot) => setRemoteVideos(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
     const unsubFiles = onSnapshot(query(collection(db, 'files'), where('uid', '==', currentUser.uid)), (snapshot) => setRemoteFiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
-    return () => { unsubUsers(); unsubMusic(); unsubVideos(); unsubFiles() }
+    return () => { unsubUsers(); unsubMusic(); unsubStickers(); unsubVideos(); unsubFiles() }
   }, [currentUser])
-  const createPost = async (post) => { const { id, fileId, ...publicPost } = post; await addDoc(collection(db, 'posts'), { ...publicPost, uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() }) }
+  const createPost = async (post) => {
+    const postRef = doc(collection(db, 'posts')); const { id, fileId, ...publicPost } = post
+    const optimistic = { ...publicPost, id: postRef.id, uid: currentUser.uid, author: data.profile, createdAt: Date.now(), pending: true }
+    setSharedPosts((items) => [optimistic, ...items.filter((item) => item.id !== optimistic.id)])
+    try { await setDoc(postRef, { ...publicPost, uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() }) }
+    catch (error) { setSharedPosts((items) => items.filter((item) => item.id !== optimistic.id)); window.alert(`Не удалось опубликовать пост: ${error.message}`) }
+  }
   const deleteSharedPost = async (post) => { if (post.uid === currentUser.uid) await deleteDoc(doc(db, 'posts', post.id)) }
   const openChat = (id) => { setChatFriend(id); navigate('messages') }
   const titles = Object.fromEntries(navItems.map(([id, title]) => [id, title]))
@@ -834,10 +898,11 @@ export default function App() {
       {active === 'video' && <FreeStorageNotice type="video" />}
       {active === 'games' && <GamesPage data={data} update={update} />}
       {active === 'gifts' && <GiftsPage data={data} update={update} />}
-      {active === 'messages' && <NetworkMessagesPage data={data} users={networkUsers} currentUser={currentUser} initialFriend={chatFriend} />}
+      {active === 'messages' && <NetworkMessagesPage data={data} users={networkUsers} currentUser={currentUser} initialFriend={chatFriend} stickerPacks={stickerPacks} />}
       {active === 'calls' && <CallsPage calls={[...outgoingCalls, ...incomingCalls].sort((a, b) => b.createdAt - a.createdAt)} users={networkUsers} currentUser={currentUser} profile={data.profile} />}
-      {active === 'music' && <MusicPage tracks={musicTracks} data={data} currentUser={currentUser} />}
+      {active === 'music' && <MusicPage tracks={musicTracks} setTracks={setMusicTracks} data={data} currentUser={currentUser} />}
       {active === 'status' && <StatusPage data={data} update={update} currentUser={currentUser} />}
+      {active === 'stickers' && <StickersPage packs={stickerPacks} data={data} update={update} currentUser={currentUser} />}
       {active === 'friends' && <FriendsPage data={data} update={update} openChat={openChat} />}
       {active === 'cloud' && <FreeStorageNotice type="cloud" />}
       {active === 'labs' && <LabsPage data={data} update={update} />}
