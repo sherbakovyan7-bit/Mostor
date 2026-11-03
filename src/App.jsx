@@ -556,6 +556,14 @@ export default function App() {
   const [chatFriend, setChatFriend] = useState('')
   const [selectedVideo, setSelectedVideo] = useState('')
   const [notificationOpen, setNotificationOpen] = useState(false)
+  useEffect(() => {
+    const viewport = window.visualViewport
+    const updateHeight = () => document.documentElement.style.setProperty('--app-height', `${viewport?.height || window.innerHeight}px`)
+    updateHeight()
+    viewport?.addEventListener('resize', updateHeight)
+    window.addEventListener('resize', updateHeight)
+    return () => { viewport?.removeEventListener('resize', updateHeight); window.removeEventListener('resize', updateHeight) }
+  }, [])
   const navigate = (page) => { setActive(page); if (page !== 'video') setSelectedVideo(''); setMenu(false); window.scrollTo(0, 0) }
   useEffect(() => onAuthStateChanged(auth, async (user) => {
     setCurrentUser(user || null)
