@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth'
+import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp, setDoc } from 'firebase/firestore'
 import {
   ArrowLeft, Bell, Bookmark, Check, Cloud, Download, Film, FolderOpen, Gamepad2,
   FlaskConical, Gift, HardDrive, Heart, Home, Image, Menu, MessageCircle, MoreHorizontal,
@@ -6,6 +8,7 @@ import {
   Send, Settings, ShoppingBag, Smile, Trophy, Trash2, Upload, UserPlus, Users,
   Video, VideoOff, X, Zap,
 } from 'lucide-react'
+import { auth, db } from './firebase'
 
 const initialData = {
   profile: { name: 'Ян', username: 'yan', bio: 'Основатель Mostor', avatar: '' },
@@ -154,7 +157,7 @@ function Topbar({ title, query, setQuery, openMenu, profile, notifications, open
     <h1>{title}</h1>
     <label className="global-search"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Поиск в Mostor" /></label>
     <button className="top-icon" onClick={openNotifications}><Bell size={19} />{notifications > 0 && <i>{notifications}</i>}</button>
-    <Avatar profile={profile} size={38} />
+    <button className="account-exit" onClick={() => signOut(auth)} title="Выйти из аккаунта"><Avatar profile={profile} size={38} /></button>
   </header>
 }
 
@@ -164,6 +167,35 @@ function Modal({ title, children, close, wide = false }) {
 
 function Empty({ icon: Icon, title, text, action, actionText }) {
   return <div className="empty-state"><span><Icon /></span><h2>{title}</h2><p>{text}</p>{action && <button className="primary" onClick={action}><Plus size={18} />{actionText}</button>}</div>
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState('register')
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const submit = async (event) => {
+    event.preventDefault()
+    setError(''); setLoading(true)
+    try {
+      if (mode === 'register') {
+        if (name.trim().length < 2) throw new Error('Введите имя не короче двух символов.')
+        const credential = await createUserWithEmailAndPassword(auth, email.trim(), password)
+        await updateProfile(credential.user, { displayName: name.trim() })
+        await setDoc(doc(db, 'users', credential.user.uid), { name: name.trim(), username: email.split('@')[0], email: email.trim(), avatar: '', bio: 'Новый пользователь Mostor', createdAt: serverTimestamp() })
+      } else {
+        await signInWithEmailAndPassword(auth, email.trim(), password)
+      }
+    } catch (reason) {
+      const messages = { 'auth/email-already-in-use': 'Этот email уже зарегистрирован.', 'auth/invalid-credential': 'Неверный email или пароль.', 'auth/weak-password': 'Пароль должен содержать минимум 6 символов.', 'auth/invalid-email': 'Введите корректный email.' }
+      setError(messages[reason.code] || reason.message || 'Не удалось войти.')
+    } finally { setLoading(false) }
+  }
+
+  return <main className="auth-screen"><section className="auth-brand"><div className="auth-logo"><span>M</span>ostor<b>.</b></div><span className="eyebrow">СОЦИАЛЬНАЯ СЕТЬ</span><h1>Ваши люди.<br />Ваши идеи.<br />Ваше пространство.</h1><p>Публикуйте посты и видео, общайтесь, создавайте каналы и играйте вместе.</p><div className="auth-features"><span><Users />Общая лента</span><span><Video />Видеохостинг</span><span><MessageCircle />Сообщения</span></div></section><section className="auth-panel"><div className="auth-card"><span className="auth-kicker">{mode === 'register' ? 'НОВЫЙ АККАУНТ' : 'С ВОЗВРАЩЕНИЕМ'}</span><h2>{mode === 'register' ? 'Присоединяйтесь к Mostor' : 'Войдите в Mostor'}</h2><p>{mode === 'register' ? 'Создайте отдельный профиль и публикуйте в общей ленте.' : 'Продолжайте с того места, где остановились.'}</p><form onSubmit={submit}>{mode === 'register' && <label className="field">Имя<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Как вас зовут?" autoComplete="name" /></label>}<label className="field">Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" /></label><label className="field">Пароль<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Минимум 6 символов" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} /></label>{error && <p className="auth-error">{error}</p>}<button className="primary auth-submit" disabled={loading}>{loading ? 'Подождите...' : mode === 'register' ? 'Создать аккаунт' : 'Войти'}</button></form><button className="auth-switch" onClick={() => { setMode(mode === 'register' ? 'login' : 'register'); setError('') }}>{mode === 'register' ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'}</button></div></section></main>
 }
 
 function PostComposer({ profile, channels, close, onCreate }) {
@@ -179,17 +211,20 @@ function PostComposer({ profile, channels, close, onCreate }) {
   const publish = async () => {
     if (!text.trim() && !file) return
     let fileId = ''
+    let mediaUrl = ''
     if (file) { fileId = crypto.randomUUID(); await putFile(fileId, file) }
-    onCreate({ id: crypto.randomUUID(), text: text.trim(), fileId, mediaType: file?.type.startsWith('video') ? 'video' : file ? 'image' : '', channelId, createdAt: Date.now(), likes: 0 })
+    if (file && file.size <= 700000) mediaUrl = await new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(file) })
+    await onCreate({ id: crypto.randomUUID(), text: text.trim(), fileId, mediaUrl, mediaType: file?.type.startsWith('video') ? 'video' : file ? 'image' : '', channelId, createdAt: Date.now(), likes: 0 })
     close()
   }
   return <Modal title="Новая публикация" close={close} wide><div className="composer-head"><Avatar profile={profile} /><div><b>{profile.name}</b><small>@{profile.username}</small></div></div><textarea className="big-input" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="Что происходит?" />{preview && <div className="post-preview">{file.type.startsWith('video') ? <video src={preview} controls /> : <img src={preview} alt="" />}<button onClick={() => setFile(null)}><X /></button></div>}<div className="modal-row"><label className="file-button"><Image size={18} />Фото или видео<input type="file" accept="image/*,video/*" onChange={(e) => setFile(e.target.files[0])} /></label><select value={channelId} onChange={(e) => setChannelId(e.target.value)}><option value="">Личная лента</option>{channels.map((channel) => <option value={channel.id} key={channel.id}>#{channel.name}</option>)}</select><button className="primary" disabled={!text.trim() && !file} onClick={publish}>Опубликовать</button></div></Modal>
 }
 
-function Media({ fileId, type, controls = false }) {
+function Media({ fileId, mediaUrl, type, controls = false }) {
   const url = useFileUrl(fileId)
-  if (!url) return <div className="media-loading">Загрузка медиа...</div>
-  return type === 'video' ? <video className="post-media" src={url} controls={controls} /> : <img className="post-media" src={url} alt="" />
+  const source = mediaUrl || url
+  if (!source) return <div className="media-loading">Медиа доступно только на устройстве автора</div>
+  return type === 'video' ? <video className="post-media" src={source} controls={controls} /> : <img className="post-media" src={source} alt="" />
 }
 
 function ReactionBar({ reactions = {}, onReact }) {
@@ -197,19 +232,18 @@ function ReactionBar({ reactions = {}, onReact }) {
   return <div className="reaction-bar">{options.map((emoji) => <button className={reactions[emoji] ? 'selected' : ''} onClick={() => onReact(emoji)} key={emoji}>{emoji}{reactions[emoji] ? <span>{reactions[emoji]}</span> : null}</button>)}</div>
 }
 
-function PostCard({ post, profile, channel, onDelete, discussion, onComment, reactions, onReact, saved, onSave }) {
+function PostCard({ post, profile, channel, onDelete, discussion, onComment, reactions, onReact, saved, onSave, canDelete }) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const submit = (event) => { event.preventDefault(); if (!text.trim()) return; onComment(post.id, text.trim()); setText('') }
-  return <article className="post-card panel"><header><Avatar profile={profile} /><div><b>{profile.name}</b><small>@{profile.username} · {new Date(post.createdAt).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></div><button onClick={() => onDelete(post)}><Trash2 size={17} /></button></header>{channel && <span className="channel-tag">#{channel.name}</span>}<p>{post.text}</p>{post.fileId && <Media fileId={post.fileId} type={post.mediaType} controls={post.mediaType === 'video'} />}<ReactionBar reactions={reactions} onReact={(emoji) => onReact(post.id, emoji)} /><footer><button onClick={() => onReact(post.id, '❤️')}><Heart size={20} fill={reactions['❤️'] ? 'currentColor' : 'none'} />{Object.values(reactions).reduce((sum, value) => sum + value, 0)}</button><button className={open ? 'active' : ''} onClick={() => setOpen(!open)}><MessageCircle size={20} />{discussion.length}</button><button onClick={() => navigator.clipboard?.writeText(post.text)}><Send size={19} />Поделиться</button><button className={saved ? 'saved' : ''} onClick={() => onSave(post.id)}><Bookmark size={19} fill={saved ? 'currentColor' : 'none'} /></button></footer>{open && <section className="post-discussion"><h4>Обсуждение</h4>{discussion.length === 0 && <p className="discussion-empty">Начните обсуждение этой публикации.</p>}{discussion.map((item) => <article key={item.id}><Avatar profile={profile} size={33} /><div><b>{profile.name}</b><small>{new Date(item.createdAt).toLocaleString('ru')}</small><p>{item.text}</p></div></article>)}<form onSubmit={submit}><Avatar profile={profile} size={34} /><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Написать комментарий..." /><button><Send size={17} /></button></form></section>}</article>
+  return <article className="post-card panel"><header><Avatar profile={profile} /><div><b>{profile.name}</b><small>@{profile.username} · {new Date(post.createdAt).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></div>{canDelete && <button onClick={() => onDelete(post)}><Trash2 size={17} /></button>}</header>{channel && <span className="channel-tag">#{channel.name}</span>}<p>{post.text}</p>{(post.fileId || post.mediaUrl) && <Media fileId={post.fileId} mediaUrl={post.mediaUrl} type={post.mediaType} controls={post.mediaType === 'video'} />}<ReactionBar reactions={reactions} onReact={(emoji) => onReact(post.id, emoji)} /><footer><button onClick={() => onReact(post.id, '❤️')}><Heart size={20} fill={reactions['❤️'] ? 'currentColor' : 'none'} />{Object.values(reactions).reduce((sum, value) => sum + value, 0)}</button><button className={open ? 'active' : ''} onClick={() => setOpen(!open)}><MessageCircle size={20} />{discussion.length}</button><button onClick={() => navigator.clipboard?.writeText(post.text)}><Send size={19} />Поделиться</button><button className={saved ? 'saved' : ''} onClick={() => onSave(post.id)}><Bookmark size={19} fill={saved ? 'currentColor' : 'none'} /></button></footer>{open && <section className="post-discussion"><h4>Обсуждение</h4>{discussion.length === 0 && <p className="discussion-empty">Начните обсуждение этой публикации.</p>}{discussion.map((item) => <article key={item.id}><Avatar profile={item.author || profile} size={33} /><div><b>{item.author?.name || profile.name}</b><small>{new Date(item.createdAt).toLocaleString('ru')}</small><p>{item.text}</p></div></article>)}<form onSubmit={submit}><Avatar profile={profile} size={34} /><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Написать комментарий..." /><button><Send size={17} /></button></form></section>}</article>
 }
 
-function FeedPage({ data, update, openComposer }) {
-  const deletePost = async (post) => { if (post.fileId) await removeFile(post.fileId); update({ posts: data.posts.filter((item) => item.id !== post.id) }) }
-  const addComment = (postId, text) => update({ postDiscussions: { ...data.postDiscussions, [postId]: [...(data.postDiscussions[postId] || []), { id: crypto.randomUUID(), text, createdAt: Date.now() }] } })
+function FeedPage({ data, update, openComposer, posts, currentUid, deletePost }) {
+  const addComment = (postId, text) => update({ postDiscussions: { ...data.postDiscussions, [postId]: [...(data.postDiscussions[postId] || []), { id: crypto.randomUUID(), text, createdAt: Date.now(), author: data.profile }] } })
   const react = (postId, emoji) => { const current = data.postReactions[postId] || {}; update({ postReactions: { ...data.postReactions, [postId]: { ...current, [emoji]: current[emoji] ? 0 : 1 } } }) }
   const save = (postId) => update({ savedPosts: data.savedPosts.includes(postId) ? data.savedPosts.filter((id) => id !== postId) : [...data.savedPosts, postId] })
-  return <main className="feed-layout"><section className="feed-column"><div className="feed-intro"><div><span className="eyebrow">ВАША ЛЕНТА</span><h2>Здесь начинается Mostor.</h2></div><button className="primary" onClick={openComposer}><Plus />Добавить пост</button></div>{data.posts.length === 0 ? <Empty icon={Home} title="Лента пока пустая" text="Создайте первую публикацию: текст, фотографию или видео." action={openComposer} actionText="Добавить первый пост" /> : data.posts.map((post) => <PostCard post={post} profile={data.profile} channel={data.channels.find((item) => item.id === post.channelId)} onDelete={deletePost} discussion={data.postDiscussions[post.id] || []} onComment={addComment} reactions={data.postReactions[post.id] || {}} onReact={react} saved={data.savedPosts.includes(post.id)} onSave={save} key={post.id} />)}</section><aside className="feed-rail"><section className="panel quick-card"><h3>Быстрый старт</h3><button onClick={openComposer}><Plus />Новая публикация</button><p>Создавайте каналы, добавляйте друзей и храните файлы в личном облаке.</p></section><section className="panel stats-card"><span><b>{data.posts.length}</b>постов</span><span><b>{data.friends.length}</b>друзей</span><span><b>{data.savedPosts.length}</b>сохранено</span></section></aside></main>
+  return <main className="feed-layout"><section className="feed-column"><div className="feed-intro"><div><span className="eyebrow">ОБЩАЯ ЛЕНТА</span><h2>Посты всего Mostor.</h2></div><button className="primary" onClick={openComposer}><Plus />Добавить пост</button></div>{posts.length === 0 ? <Empty icon={Home} title="Лента пока пустая" text="Создайте первую публикацию, которую увидят все зарегистрированные пользователи." action={openComposer} actionText="Добавить первый пост" /> : posts.map((post) => <PostCard post={post} profile={post.author || data.profile} channel={data.channels.find((item) => item.id === post.channelId)} onDelete={deletePost} canDelete={post.uid === currentUid} discussion={data.postDiscussions[post.id] || []} onComment={addComment} reactions={data.postReactions[post.id] || {}} onReact={react} saved={data.savedPosts.includes(post.id)} onSave={save} key={post.id} />)}</section><aside className="feed-rail"><section className="panel quick-card"><h3>Быстрый старт</h3><button onClick={openComposer}><Plus />Новая публикация</button><p>Публикации синхронизируются через Firebase и видны другим пользователям.</p></section><section className="panel stats-card"><span><b>{posts.length}</b>постов</span><span><b>{data.friends.length}</b>друзей</span><span><b>{data.savedPosts.length}</b>сохранено</span></section></aside></main>
 }
 
 function ChannelsPage({ data, update }) {
@@ -320,11 +354,11 @@ function CloudPage({ data, update }) {
   return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR CLOUD</span><h2>Облако</h2><p>Файлы сохраняются приватно на этом устройстве.</p></div><button className="primary" onClick={() => input.current.click()}><Upload />Загрузить файлы</button><input ref={input} hidden multiple type="file" onChange={(e) => upload([...e.target.files])} /></div><div className="storage-meter panel"><HardDrive /><div><span><b>{formatBytes(used)}</b> занято</span><i><em style={{ width: `${Math.min(100, used / 1048576)}%` }} /></i><small>Локальное защищенное хранилище браузера</small></div></div>{data.cloudFiles.length === 0 ? <Empty icon={Cloud} title="Облако пустое" text="Загружайте документы, изображения, архивы и другие файлы." action={() => input.current.click()} actionText="Загрузить файлы" /> : <div className="file-list panel">{data.cloudFiles.map((file) => <article key={file.id}><span><FolderOpen /></span><div><b>{file.name}</b><small>{formatBytes(file.size)} · {new Date(file.createdAt).toLocaleDateString('ru')}</small></div><button onClick={() => download(file)}><Download /></button><button onClick={() => remove(file)}><Trash2 /></button></article>)}</div>}</main>
 }
 
-function ProfilePage({ data, update }) {
+function ProfilePage({ data, update, currentUser }) {
   const [draft, setDraft] = useState(data.profile)
   const avatarInput = useRef(null)
   const chooseAvatar = (file) => { if (!file) return; const reader = new FileReader(); reader.onload = () => setDraft((value) => ({ ...value, avatar: reader.result })); reader.readAsDataURL(file) }
-  const save = () => update({ profile: { ...draft, name: draft.name.trim() || 'Пользователь', username: draft.username.trim().replace(/\s/g, '') || 'user' } })
+  const save = async () => { const profile = { ...draft, name: draft.name.trim() || 'Пользователь', username: draft.username.trim().replace(/\s/g, '') || 'user' }; update({ profile }); await updateProfile(currentUser, { displayName: profile.name, photoURL: profile.avatar || null }); await setDoc(doc(db, 'users', currentUser.uid), profile, { merge: true }) }
   const toggleSetting = (key) => update({ settings: { ...data.settings, [key]: !data.settings[key] } })
   return <main className="content-page profile-page"><div className="profile-cover"><span>MOSTOR ID</span></div><section className="profile-settings panel"><div className="avatar-editor"><Avatar profile={draft} size={112} /><button onClick={() => avatarInput.current.click()}><Pencil size={17} /></button><input ref={avatarInput} hidden type="file" accept="image/*" onChange={(e) => chooseAvatar(e.target.files[0])} /></div><div className="profile-title"><h2>{draft.name || 'Пользователь'}</h2><p>@{draft.username || 'user'}</p></div><div className="settings-grid"><label className="field">Имя<input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label><label className="field">Имя пользователя<input value={draft.username} onChange={(e) => setDraft({ ...draft, username: e.target.value })} /></label><label className="field full-field">О себе<textarea value={draft.bio} onChange={(e) => setDraft({ ...draft, bio: e.target.value })} /></label></div><div className="profile-actions"><button className="secondary" onClick={() => setDraft({ ...draft, avatar: '' })}>Удалить фото</button><button className="primary" onClick={save}><Save size={18} />Сохранить изменения</button></div></section><section className="preferences panel"><h3>Настройки приложения</h3><div className="preference-grid"><Preference label="Компактный режим" text="Меньше отступов в ленте" active={data.settings.compact} toggle={() => toggleSetting('compact')} /><Preference label="Меньше анимаций" text="Снижает визуальное движение" active={data.settings.reduceMotion} toggle={() => toggleSetting('reduceMotion')} /><Preference label="Автозапуск видео" text="Запускать видео при открытии" active={data.settings.autoplay} toggle={() => toggleSetting('autoplay')} /><Preference label="Звуки интерфейса" text="Звуковые уведомления" active={data.settings.sounds} toggle={() => toggleSetting('sounds')} /><Preference label="Время сообщений" text="Показывать точное время" active={data.settings.timestamps} toggle={() => toggleSetting('timestamps')} /></div></section><section className="profile-dashboard"><article className="panel"><b>{data.savedPosts.length}</b><span>сохраненных постов</span></article><article className="panel"><b>{data.giftInventory.length}</b><span>подарков в коллекции</span></article><article className="panel"><b>{data.callHistory.length}</b><span>звонков</span></article><article className="panel"><b>{data.coins}</b><span>монет</span></article></section>{data.callHistory.length > 0 && <section className="call-history panel"><h3>История звонков</h3>{data.callHistory.slice(0, 8).map((call) => <article key={call.id}>{call.mode === 'video' ? <Video /> : <Phone />}<div><b>{call.target}</b><small>{new Date(call.createdAt).toLocaleString('ru')} · {call.duration} сек.</small></div><span>{call.status}</span></article>)}</section>}</main>
 }
@@ -417,6 +451,8 @@ function formatBytes(bytes) { if (!bytes) return '0 Б'; const units = ['Б','К
 
 export default function App() {
   const [data, update] = useStoredData()
+  const [currentUser, setCurrentUser] = useState(undefined)
+  const [sharedPosts, setSharedPosts] = useState([])
   const [active, setActive] = useState('feed')
   const [query, setQuery] = useState('')
   const [menu, setMenu] = useState(false)
@@ -425,14 +461,28 @@ export default function App() {
   const [selectedVideo, setSelectedVideo] = useState('')
   const [notificationOpen, setNotificationOpen] = useState(false)
   const navigate = (page) => { setActive(page); if (page !== 'video') setSelectedVideo(''); setMenu(false); window.scrollTo(0, 0) }
-  const createPost = (post) => update({ posts: [post, ...data.posts] })
+  useEffect(() => onAuthStateChanged(auth, async (user) => {
+    setCurrentUser(user || null)
+    if (!user) return
+    const snapshot = await getDoc(doc(db, 'users', user.uid))
+    if (snapshot.exists()) update({ profile: { ...initialData.profile, ...snapshot.data() } })
+    else { const profile = { name: user.displayName || 'Пользователь', username: user.email?.split('@')[0] || 'user', email: user.email, avatar: user.photoURL || '', bio: 'Новый пользователь Mostor' }; await setDoc(doc(db, 'users', user.uid), profile); update({ profile }) }
+  }), [])
+  useEffect(() => {
+    if (!currentUser) { setSharedPosts([]); return }
+    return onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc')), (snapshot) => setSharedPosts(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
+  }, [currentUser])
+  const createPost = async (post) => { const { id, fileId, ...publicPost } = post; await addDoc(collection(db, 'posts'), { ...publicPost, uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() }) }
+  const deleteSharedPost = async (post) => { if (post.uid === currentUser.uid) await deleteDoc(doc(db, 'posts', post.id)) }
   const openChat = (id) => { setChatFriend(id); navigate('messages') }
   const titles = Object.fromEntries(navItems.map(([id, title]) => [id, title]))
+  if (currentUser === undefined) return <div className="app-loading"><span>M</span><p>Загрузка Mostor...</p></div>
+  if (!currentUser) return <AuthScreen />
   return <div className="app-shell">
     <div className={`mobile-drawer ${menu ? 'open' : ''}`} onClick={(e) => e.target === e.currentTarget && setMenu(false)}><Sidebar active={active} setActive={navigate} profile={data.profile} /></div>
     <Sidebar active={active} setActive={navigate} profile={data.profile} />
     <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={query} setQuery={setQuery} openMenu={() => setMenu(true)} profile={data.profile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />
-      {active === 'feed' && <FeedPage data={data} update={update} openComposer={() => setComposer(true)} />}
+      {active === 'feed' && <FeedPage data={data} update={update} posts={sharedPosts} currentUid={currentUser.uid} deletePost={deleteSharedPost} openComposer={() => setComposer(true)} />}
       {active === 'channels' && <ChannelsPage data={data} update={update} />}
       {active === 'video' && <VideosPage data={data} update={update} selectedVideo={selectedVideo} setSelectedVideo={setSelectedVideo} />}
       {active === 'games' && <GamesPage data={data} update={update} />}
@@ -441,7 +491,7 @@ export default function App() {
       {active === 'friends' && <FriendsPage data={data} update={update} openChat={openChat} />}
       {active === 'cloud' && <CloudPage data={data} update={update} />}
       {active === 'labs' && <LabsPage data={data} update={update} />}
-      {active === 'profile' && <ProfilePage data={data} update={update} />}
+      {active === 'profile' && <ProfilePage data={data} update={update} currentUser={currentUser} />}
     </div>
     <nav className="mobile-nav">{navItems.slice(0, 5).map(([id,,Icon]) => <button className={active === id ? 'active' : ''} onClick={() => navigate(id)} key={id}><Icon /></button>)}</nav>
     {composer && <PostComposer profile={data.profile} channels={data.channels} close={() => setComposer(false)} onCreate={createPost} />}
