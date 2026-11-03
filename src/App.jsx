@@ -552,14 +552,15 @@ function ChatMessage({ message, mine }) {
   return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{message.sticker && <img className="chat-sticker" src={message.sticker.image} alt={message.sticker.name || 'Стикер'} />}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <MediaAudio media={media} />}{media?.kind === 'circle' && <CircleMessage media={media} />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}{delivery && <b className="delivery-checks">{delivery}</b>}</small></div>
 }
 
-function mediaToBlob(media) {
+async function mediaToBlob(media) {
   if (media.base64) {
     const binary = atob(media.base64)
     const bytes = new Uint8Array(binary.length)
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
     return new Blob([bytes], { type: media.type || 'application/octet-stream' })
   }
-  return fetch(media.url).then((response) => response.blob())
+  const response = await fetch(media.url)
+  return response.blob()
 }
 
 function MediaAudio({ media }) {
