@@ -170,7 +170,7 @@ function Topbar({ title, query, setQuery, openMenu, profile, notifications, open
     <h1>{title}</h1>
     <label className="global-search"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Поиск в Mostor" /></label>
     <button className="top-icon" onClick={openNotifications}><Bell size={19} />{notifications > 0 && <i>{notifications}</i>}</button>
-    <button className="account-exit" onClick={() => signOut(auth)} title="Выйти из аккаунта"><Avatar profile={profile} size={38} /></button>
+    <button className="account-exit" onClick={() => window.dispatchEvent(new CustomEvent('mostor:profile', { detail: profile }))} title="Открыть профиль"><Avatar profile={{ ...profile, uid: '' }} size={38} /></button>
   </header>
 }
 
@@ -400,10 +400,13 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
   }
   const sendMediaBlob = async (blob, kind) => {
     if (!contact) return
-    if (blob.size > 600 * 1024) { window.alert('Запись получилась слишком большой. Попробуйте короче.'); return }
-    const fileUrl = await new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(blob) })
-    await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: kind === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение' }, { merge: true })
-    await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, mediaMessage: { kind, type: blob.type, url: fileUrl, size: blob.size }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+    if (!blob.size) { window.alert('Запись пустая. Попробуйте еще раз.'); return }
+    if (blob.size > 580 * 1024) { window.alert('Запись получилась слишком большой. Запишите короче.'); return }
+    try {
+      const fileUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(blob) })
+      await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: kind === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение' }, { merge: true })
+      await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, mediaMessage: { kind, type: blob.type, url: fileUrl, size: blob.size }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+    } catch (error) { window.alert(error.code === 'permission-denied' ? 'Обновите Firestore Rules для отправки медиа.' : `Не удалось отправить запись: ${error.message}`) }
   }
   const stopRecording = () => { const active = recorderRef.current; if (!active) return; clearInterval(active.timer); if (active.recorder.state === 'recording') active.recorder.stop(); recorderRef.current = null }
   const startRecording = async (kind) => {
@@ -411,15 +414,19 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: kind === 'circle' ? { width: 320, height: 320, facingMode: 'user' } : false })
       const chunks = []
-      const options = kind === 'voice' ? { mimeType: 'audio/webm', audioBitsPerSecond: 48000 } : { mimeType: 'video/webm', videoBitsPerSecond: 280000, audioBitsPerSecond: 32000 }
-      const recorder = new MediaRecorder(stream, MediaRecorder.isTypeSupported(options.mimeType) ? options : undefined)
+      const candidates = kind === 'voice' ? ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'] : ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm', 'video/mp4']
+      const mimeType = candidates.find((type) => MediaRecorder.isTypeSupported(type)) || ''
+      const options = kind === 'voice' ? { audioBitsPerSecond: 40000 } : { videoBitsPerSecond: 180000, audioBitsPerSecond: 24000 }
+      if (mimeType) options.mimeType = mimeType
+      const recorder = new MediaRecorder(stream, options)
       recorderRef.current = { recorder, stream, kind, timer: null }
       recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data) }
-      recorder.onstop = async () => { stream.getTracks().forEach((track) => track.stop()); setRecording(null); setRecordSeconds(0); await sendMediaBlob(new Blob(chunks, { type: recorder.mimeType }), kind) }
+      recorder.onerror = () => window.alert('Браузер не смог записать видео. Используйте скрепку для отправки файла.')
+      recorder.onstop = async () => { stream.getTracks().forEach((track) => track.stop()); setRecording(null); setRecordSeconds(0); await sendMediaBlob(new Blob(chunks, { type: recorder.mimeType || mimeType || (kind === 'voice' ? 'audio/webm' : 'video/webm') }), kind) }
       recorder.start(250); setRecording(kind); setRecordSeconds(0)
       recorderRef.current.timer = setInterval(() => setRecordSeconds((value) => value + 1), 1000)
-      setTimeout(() => { if (recorder.state === 'recording') stopRecording() }, 8000)
-    } catch { window.alert('Разрешите Mostor доступ к микрофону и камере.') }
+      setTimeout(() => { if (recorder.state === 'recording') stopRecording() }, 6000)
+    } catch (error) { window.alert(error.name === 'NotAllowedError' ? 'Разрешите Mostor доступ к микрофону и камере.' : `Запись не поддерживается: ${error.message}`) }
   }
   useEffect(() => {
     const form = document.querySelector('.dialog > form')
@@ -743,21 +750,23 @@ export default function App() {
   }), [])
   useEffect(() => {
     if (!currentUser) { setSharedPosts([]); return }
-    return onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc')), (snapshot) => setSharedPosts(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
+    return onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc')), (snapshot) => setSharedPosts(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), (error) => { if (error.code !== 'permission-denied') console.error(error) })
   }, [currentUser])
   useEffect(() => {
     if (!currentUser) return
     const mapCalls = (snapshot) => snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))
-    const unsubOutgoing = onSnapshot(query(collection(db, 'calls'), where('callerId', '==', currentUser.uid)), (snapshot) => setOutgoingCalls(mapCalls(snapshot)))
-    const unsubIncoming = onSnapshot(query(collection(db, 'calls'), where('calleeId', '==', currentUser.uid)), (snapshot) => setIncomingCalls(mapCalls(snapshot)))
+    const handleError = (error) => { if (error.code !== 'permission-denied') console.error(error) }
+    const unsubOutgoing = onSnapshot(query(collection(db, 'calls'), where('callerId', '==', currentUser.uid)), (snapshot) => setOutgoingCalls(mapCalls(snapshot)), handleError)
+    const unsubIncoming = onSnapshot(query(collection(db, 'calls'), where('calleeId', '==', currentUser.uid)), (snapshot) => setIncomingCalls(mapCalls(snapshot)), handleError)
     return () => { unsubOutgoing(); unsubIncoming() }
   }, [currentUser])
   useEffect(() => {
     if (!currentUser) return
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => setNetworkUsers(snapshot.docs.map((item) => ({ uid: item.id, ...item.data() }))))
-    const unsubMusic = onSnapshot(query(collection(db, 'music'), orderBy('createdAt', 'desc')), (snapshot) => setMusicTracks(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
-    const unsubVideos = onSnapshot(query(collection(db, 'videos'), orderBy('createdAt', 'desc')), (snapshot) => setRemoteVideos(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
-    const unsubFiles = onSnapshot(query(collection(db, 'files'), where('uid', '==', currentUser.uid)), (snapshot) => setRemoteFiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => setNetworkUsers(snapshot.docs.map((item) => ({ uid: item.id, ...item.data() }))), (error) => { if (error.code !== 'permission-denied') console.error(error) })
+    const ignoreDenied = (error) => { if (error.code !== 'permission-denied') console.error(error) }
+    const unsubMusic = onSnapshot(query(collection(db, 'music'), orderBy('createdAt', 'desc')), (snapshot) => setMusicTracks(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
+    const unsubVideos = onSnapshot(query(collection(db, 'videos'), orderBy('createdAt', 'desc')), (snapshot) => setRemoteVideos(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
+    const unsubFiles = onSnapshot(query(collection(db, 'files'), where('uid', '==', currentUser.uid)), (snapshot) => setRemoteFiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
     return () => { unsubUsers(); unsubMusic(); unsubVideos(); unsubFiles() }
   }, [currentUser])
   const createPost = async (post) => { const { id, fileId, ...publicPost } = post; await addDoc(collection(db, 'posts'), { ...publicPost, uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() }) }
