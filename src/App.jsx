@@ -272,6 +272,36 @@ function PostComposer({ profile, channels, close, onCreate }) {
   return <Modal title="Новая публикация" close={close} wide><div className="composer-head"><Avatar profile={profile} /><div><b>{profile.name}</b><small>@{profile.username}</small></div></div><textarea className="big-input" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="Что происходит?" />{preview && <div className="post-preview">{file.type.startsWith('video') ? <video src={preview} controls /> : <img src={preview} alt="" />}<button onClick={() => setFile(null)}><X /></button></div>}<div className="modal-row"><label className="file-button"><Image size={18} />Фото или видео<input type="file" accept="image/*,video/*" onChange={(e) => setFile(e.target.files[0])} /></label><select value={channelId} onChange={(e) => setChannelId(e.target.value)}><option value="">Личная лента</option>{channels.map((channel) => <option value={channel.id} key={channel.id}>#{channel.name}</option>)}</select><button className="primary" disabled={!text.trim() && !file} onClick={publish}>Опубликовать</button></div></Modal>
 }
 
+function StoriesSection({ stories, profile, createStory }) {
+  const [composer, setComposer] = useState(false)
+  const [viewing, setViewing] = useState(null)
+  return <><section className="stories-bar"><button className="story-bubble own" onClick={() => setComposer(true)}><span><Avatar profile={{ ...profile, uid: '' }} size={58} /><i><Plus /></i></span><small>Моя история</small></button>{stories.map((story) => <button className="story-bubble" onClick={() => setViewing(story)} key={story.id}><span><Avatar profile={{ ...story.author, uid: '' }} size={58} /></span><small>{story.author?.name}</small></button>)}</section>{composer && <StoryComposer close={() => setComposer(false)} createStory={createStory} profile={profile} />}{viewing && <StoryViewer story={viewing} close={() => setViewing(null)} />}</>
+}
+
+function StoryComposer({ close, createStory, profile }) {
+  const [text, setText] = useState('')
+  const [media, setMedia] = useState(null)
+  const [color, setColor] = useState('#5537b8')
+  const [preview, setPreview] = useState('')
+  useEffect(() => { if (!media) return setPreview(''); const url = URL.createObjectURL(media); setPreview(url); return () => URL.revokeObjectURL(url) }, [media])
+  const publish = async () => {
+    if (!text.trim() && !media) return
+    let mediaData = '', mediaType = ''
+    if (media) {
+      if (media.size > 550 * 1024) { window.alert('Для бесплатной истории файл должен быть меньше 550 КБ. Выберите короткое видео или небольшое фото.'); return }
+      mediaData = await new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(media) }); mediaType = media.type.startsWith('video') ? 'video' : 'image'
+    }
+    await createStory({ text: text.trim(), mediaData, mediaType, color, author: profile }); close()
+  }
+  return <Modal title="Новая история" close={close}><div className="story-compose-preview" style={{ background: media?.type.startsWith('image') && preview ? `url(${preview}) center/cover` : color }}>{media?.type.startsWith('video') ? <video src={preview} controls playsInline /> : <p>{text || 'Ваша история'}</p>}</div><textarea className="story-text-input" value={text} onChange={(event) => setText(event.target.value)} maxLength="180" placeholder="Напишите что-нибудь..." /><div className="story-tools"><label><Image />Фото<input hidden type="file" accept="image/*" onChange={(event) => setMedia(event.target.files[0])} /></label><label><Video />Короткое видео<input hidden type="file" accept="video/*" onChange={(event) => setMedia(event.target.files[0])} /></label><input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></div><small className="story-limit">Фото или видео до 550 КБ. История исчезнет через 24 часа.</small><button className="primary full" disabled={!text.trim() && !media} onClick={publish}>Опубликовать</button></Modal>
+}
+
+function StoryViewer({ story, close }) {
+  const [progress, setProgress] = useState(0)
+  useEffect(() => { const timer = setInterval(() => setProgress((value) => { if (value >= 100) { close(); return 100 } return value + 1 }), 60); return () => clearInterval(timer) }, [story.id])
+  return <div className="story-viewer" onClick={close}><div className="story-card" style={{ background: story.mediaType === 'image' ? `url(${story.mediaData}) center/cover` : story.color }} onClick={(event) => event.stopPropagation()}><i><em style={{ width: `${progress}%` }} /></i><header><Avatar profile={{ ...story.author, uid: '' }} /><div><b>{story.author?.name}</b><small>{new Date(story.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div><button onClick={close}><X /></button></header>{story.mediaType === 'video' && <video src={story.mediaData} autoPlay muted loop playsInline controls />}<p>{story.text}</p></div></div>
+}
+
 function Media({ fileId, mediaUrl, type, controls = false }) {
   const url = useFileUrl(fileId)
   const source = mediaUrl || url
@@ -824,6 +854,7 @@ export default function App() {
   const [remoteFiles, setRemoteFiles] = useState([])
   const [musicTracks, setMusicTracks] = useState([])
   const [stickerPacks, setStickerPacks] = useState([])
+  const [stories, setStories] = useState([])
   const [outgoingCalls, setOutgoingCalls] = useState([])
   const [incomingCalls, setIncomingCalls] = useState([])
   const [active, setActive] = useState('feed')
@@ -873,9 +904,10 @@ export default function App() {
     const ignoreDenied = (error) => { if (error.code !== 'permission-denied') console.error(error) }
     const unsubMusic = onSnapshot(query(collection(db, 'music'), orderBy('createdAt', 'desc')), (snapshot) => setMusicTracks(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
     const unsubStickers = onSnapshot(query(collection(db, 'stickerPacks'), orderBy('createdAt', 'desc')), (snapshot) => setStickerPacks(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), ignoreDenied)
+    const unsubStories = onSnapshot(query(collection(db, 'stories'), orderBy('createdAt', 'desc')), (snapshot) => { const cutoff = Date.now() - 24 * 60 * 60 * 1000; setStories(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() })).filter((story) => story.createdAt > cutoff)) }, ignoreDenied)
     const unsubVideos = onSnapshot(query(collection(db, 'videos'), orderBy('createdAt', 'desc')), (snapshot) => setRemoteVideos(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
     const unsubFiles = onSnapshot(query(collection(db, 'files'), where('uid', '==', currentUser.uid)), (snapshot) => setRemoteFiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
-    return () => { unsubUsers(); unsubMusic(); unsubStickers(); unsubVideos(); unsubFiles() }
+    return () => { unsubUsers(); unsubMusic(); unsubStickers(); unsubStories(); unsubVideos(); unsubFiles() }
   }, [currentUser])
   const createPost = async (post) => {
     const postRef = doc(collection(db, 'posts')); const { id, fileId, ...publicPost } = post
@@ -885,6 +917,7 @@ export default function App() {
     catch (error) { setSharedPosts((items) => items.filter((item) => item.id !== optimistic.id)); window.alert(`Не удалось опубликовать пост: ${error.message}`) }
   }
   const deleteSharedPost = async (post) => { if (post.uid === currentUser.uid) await deleteDoc(doc(db, 'posts', post.id)) }
+  const createStory = async (story) => { const storyRef = doc(collection(db, 'stories')); const value = { ...story, id: storyRef.id, uid: currentUser.uid, createdAt: Date.now(), pending: true }; setStories((items) => [value, ...items]); try { await setDoc(storyRef, { ...story, uid: currentUser.uid, createdAt: serverTimestamp() }) } catch (error) { setStories((items) => items.filter((item) => item.id !== storyRef.id)); window.alert(`Не удалось добавить историю: ${error.message}`) } }
   const openChat = (id) => { setChatFriend(id); navigate('messages') }
   const titles = Object.fromEntries(navItems.map(([id, title]) => [id, title]))
   if (currentUser === undefined) return <div className="app-loading"><span>M</span><p>Загрузка Mostor...</p></div>
@@ -893,7 +926,7 @@ export default function App() {
     <div className={`mobile-drawer ${menu ? 'open' : ''}`} onClick={(e) => e.target === e.currentTarget && setMenu(false)}><Sidebar active={active} setActive={navigate} profile={data.profile} /></div>
     <Sidebar active={active} setActive={navigate} profile={data.profile} />
     <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={searchQuery} setQuery={setSearchQuery} openMenu={() => setMenu(true)} profile={data.profile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />
-      {active === 'feed' && <FeedPage data={data} update={update} posts={sharedPosts} currentUid={currentUser.uid} deletePost={deleteSharedPost} openComposer={() => setComposer(true)} />}
+      {active === 'feed' && <><div className="stories-wrap"><StoriesSection stories={stories} profile={data.profile} createStory={createStory} /></div><FeedPage data={data} update={update} posts={sharedPosts} currentUid={currentUser.uid} deletePost={deleteSharedPost} openComposer={() => setComposer(true)} /></>}
       {active === 'channels' && <ChannelsPage data={data} update={update} />}
       {active === 'video' && <FreeStorageNotice type="video" />}
       {active === 'games' && <GamesPage data={data} update={update} />}

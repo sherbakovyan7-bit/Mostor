@@ -26,6 +26,11 @@ service cloud.firestore {
       allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
+    match /stories/{storyId} {
+      allow read, create: if signedIn();
+      allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
     match /videos/{videoId} {
       allow read, create: if signedIn();
       allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
