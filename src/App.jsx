@@ -9,6 +9,7 @@ import {
   Video, VideoOff, X, Zap,
 } from 'lucide-react'
 import { auth, db } from './firebase'
+import maintenanceImage from '../Техперерыв.png'
 
 const initialData = {
   profile: { name: 'Ян', username: 'yan', bio: 'Основатель Mostor', avatar: '', statusMode: 'online', statusText: '' },
@@ -34,6 +35,18 @@ const initialData = {
   notifications: [],
   settings: { compact: false, reduceMotion: false, autoplay: true, sounds: true, timestamps: true },
   labFlags: {},
+}
+
+const publicMaintenance = window.location.hostname === 'sherbakovyan7-bit.github.io'
+const ownerAccessToken = 'mostor-owner-7f42a9'
+
+function hasOwnerAccess() {
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('owner') === ownerAccessToken) {
+    localStorage.setItem('mostor-owner-access', ownerAccessToken)
+    window.history.replaceState({}, '', window.location.pathname)
+  }
+  return localStorage.getItem('mostor-owner-access') === ownerAccessToken
 }
 
 const navItems = [
@@ -921,6 +934,7 @@ export default function App() {
   const createStory = async (story) => { const storyRef = doc(collection(db, 'stories')); const value = { ...story, id: storyRef.id, uid: currentUser.uid, createdAt: Date.now(), pending: true }; setStories((items) => [value, ...items]); try { await setDoc(storyRef, { ...story, uid: currentUser.uid, createdAt: serverTimestamp() }) } catch (error) { setStories((items) => items.filter((item) => item.id !== storyRef.id)); window.alert(`Не удалось добавить историю: ${error.message}`) } }
   const openChat = (id) => { setChatFriend(id); navigate('messages') }
   const titles = Object.fromEntries(navItems.map(([id, title]) => [id, title]))
+  if (publicMaintenance && !hasOwnerAccess()) return <main className="maintenance-image-page"><img src={maintenanceImage} alt="В Mostor проходит технический перерыв" /></main>
   if (currentUser === undefined) return <div className="app-loading"><span>M</span><p>Загрузка Mostor...</p></div>
   if (!currentUser) return <AuthScreen />
   return <div className="app-shell">
