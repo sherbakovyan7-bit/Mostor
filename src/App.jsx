@@ -519,14 +519,17 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend, stickerP
     }
     let sticker = form.querySelector('.sticker-picker-button')
     if (!sticker) { sticker = document.createElement('button'); sticker.type = 'button'; sticker.className = 'sticker-picker-button'; sticker.textContent = '☺'; form.insertBefore(sticker, form.querySelector('input:not([type="file"])')) }
+    let picture = form.querySelector('.picture-picker-button')
+    if (!picture) { picture = document.createElement('button'); picture.type = 'button'; picture.className = 'picture-picker-button'; picture.textContent = '▧'; form.insertBefore(picture, form.querySelector('input:not([type="file"])')) }
     sticker.onclick = () => setStickersOpen(true)
+    picture.onclick = () => picker?.click()
     voice.textContent = recording === 'voice' ? `■ ${recordSeconds}с` : '🎙'
     circle.textContent = recording === 'circle' ? `■ ${recordSeconds}с` : '●'
     voice.classList.toggle('recording', recording === 'voice')
     circle.classList.toggle('recording', recording === 'circle')
     voice.onclick = () => recording === 'voice' ? stopRecording() : startRecording('voice')
     circle.onclick = () => recording === 'circle' ? stopRecording() : startRecording('circle')
-  }, [chatId, recording, recordSeconds])
+  }, [chatId, recording, recordSeconds, circlePreview, stickersOpen, messages.length])
   const startCall = async (mode) => {
     if (!contact) return
     await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: mode === 'video' ? 'Видеозвонок' : 'Звонок' }, { merge: true })
