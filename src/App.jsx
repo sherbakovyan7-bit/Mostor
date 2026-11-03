@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth'
-import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp, setDoc } from 'firebase/firestore'
+import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore'
+import { deleteObject, getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage'
 import {
   ArrowLeft, Bell, Bookmark, Check, Cloud, Download, Film, FolderOpen, Gamepad2,
   FlaskConical, Gift, HardDrive, Heart, Home, Image, Menu, MessageCircle, MoreHorizontal,
@@ -8,7 +9,7 @@ import {
   Send, Settings, ShoppingBag, Smile, Trophy, Trash2, Upload, UserPlus, Users,
   Video, VideoOff, X, Zap,
 } from 'lucide-react'
-import { auth, db } from './firebase'
+import { auth, db, storage } from './firebase'
 
 const initialData = {
   profile: { name: 'Ян', username: 'yan', bio: 'Основатель Mostor', avatar: '' },
@@ -254,26 +255,31 @@ function ChannelsPage({ data, update }) {
   return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">СООБЩЕСТВА</span><h2>Каналы</h2><p>Вступайте в сообщества и публикуйте материалы по темам.</p></div><button className="primary" onClick={() => setOpen(true)}><Plus />Создать канал</button></div>{data.channels.length === 0 ? <Empty icon={Users} title="Каналов еще нет" text="Создайте первый канал для новостей, игр, музыки или своей команды." action={() => setOpen(true)} actionText="Создать канал" /> : <div className="channel-grid">{data.channels.map((channel) => <article className="channel-card panel" key={channel.id}><span>#</span><h3>{channel.name}</h3><p>{data.posts.filter((post) => post.channelId === channel.id).length} публикаций · {channel.members || 0} участников</p><div className="channel-actions"><button className={channel.joined ? 'joined' : 'join'} onClick={() => toggleJoin(channel)}>{channel.joined ? <><Check size={16} />Вы участник</> : <><UserPlus size={16} />Вступить</>}</button><button className="delete-channel" onClick={() => update({ channels: data.channels.filter((item) => item.id !== channel.id) })}><Trash2 size={16} /></button></div></article>)}</div>}{open && <Modal title="Новый канал" close={() => setOpen(false)}><label className="field">Название<input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Например: Разработка" /></label><button className="primary full" onClick={create}>Создать канал</button></Modal>}</main>
 }
 
-function VideosPage({ data, update, selectedVideo, setSelectedVideo }) {
+function VideosPage({ data, update, selectedVideo, setSelectedVideo, currentUser, remoteVideos }) {
   const input = useRef(null)
+  const [progress, setProgress] = useState(0)
   const upload = async (file) => {
     if (!file) return
-    const id = crypto.randomUUID(); await putFile(id, file)
-    update({ videos: [{ id, title: file.name.replace(/\.[^.]+$/, ''), size: file.size, createdAt: Date.now() }, ...data.videos] })
+    const id = crypto.randomUUID(); const path = `videos/${currentUser.uid}/${id}-${file.name}`
+    const task = uploadBytesResumable(storageRef(storage, path), file)
+    task.on('state_changed', (snapshot) => setProgress(Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100)), () => setProgress(0), async () => {
+      const url = await getDownloadURL(task.snapshot.ref)
+      await setDoc(doc(db, 'videos', id), { title: file.name.replace(/\.[^.]+$/, ''), size: file.size, type: file.type, url, path, uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() })
+      setProgress(0)
+    })
   }
-  const remove = async (video) => { await removeFile(video.id); update({ videos: data.videos.filter((item) => item.id !== video.id) }) }
-  const current = data.videos.find((video) => video.id === selectedVideo)
-  if (current) return <VideoPlayerPage video={current} videos={data.videos} profile={data.profile} engagement={data.videoEngagement || {}} update={update} close={() => setSelectedVideo('')} select={setSelectedVideo} />
-  return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">ВИДЕОХОСТИНГ</span><h2>Ваши видео</h2><p>Раздел пуст, пока вы сами не загрузите первое видео.</p></div><button className="primary" onClick={() => input.current.click()}><Upload />Загрузить видео</button><input ref={input} hidden type="file" accept="video/*" onChange={(e) => upload(e.target.files[0])} /></div>{data.videos.length === 0 ? <Empty icon={Video} title="Видео пока нет" text="Mostor не добавляет демонстрационные ролики. Здесь появятся только ваши загрузки." action={() => input.current.click()} actionText="Загрузить первое видео" /> : <div className="video-grid">{data.videos.map((video) => <VideoCard video={video} remove={remove} open={() => setSelectedVideo(video.id)} key={video.id} />)}</div>}</main>
+  const remove = async (video) => { if (video.uid !== currentUser.uid) return; await deleteObject(storageRef(storage, video.path)); await deleteDoc(doc(db, 'videos', video.id)) }
+  const current = remoteVideos.find((video) => video.id === selectedVideo)
+  if (current) return <VideoPlayerPage video={current} videos={remoteVideos} profile={data.profile} engagement={data.videoEngagement || {}} update={update} close={() => setSelectedVideo('')} select={setSelectedVideo} />
+  return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">ВИДЕОХОСТИНГ</span><h2>Видео Mostor</h2><p>Большие ролики хранятся в Firebase Storage и доступны всем пользователям.</p></div><button className="primary" onClick={() => input.current.click()}><Upload />Загрузить видео</button><input ref={input} hidden type="file" accept="video/*" onChange={(e) => upload(e.target.files[0])} /></div>{progress > 0 && <div className="upload-progress panel"><span>Загрузка видео</span><i><em style={{ width: `${progress}%` }} /></i><b>{progress}%</b></div>}{remoteVideos.length === 0 ? <Empty icon={Video} title="Видео пока нет" text="Загрузите первый большой ролик в общее хранилище Mostor." action={() => input.current.click()} actionText="Загрузить первое видео" /> : <div className="video-grid">{remoteVideos.map((video) => <VideoCard video={video} remove={remove} canDelete={video.uid === currentUser.uid} open={() => setSelectedVideo(video.id)} key={video.id} />)}</div>}</main>
 }
 
-function VideoCard({ video, remove, open }) {
-  const url = useFileUrl(video.id)
-  return <article className="video-card panel"><button className="video-cover" onClick={open}><video src={url} muted preload="metadata" /><span><Play fill="currentColor" /></span></button><div><button className="video-title" onClick={open}><h3>{video.title}</h3><small>{formatBytes(video.size)}</small></button><button onClick={() => remove(video)}><Trash2 size={16} /></button></div></article>
+function VideoCard({ video, remove, open, canDelete }) {
+  return <article className="video-card panel"><button className="video-cover" onClick={open}><video src={video.url} muted preload="metadata" /><span><Play fill="currentColor" /></span></button><div><button className="video-title" onClick={open}><h3>{video.title}</h3><small>{video.author?.name} · {formatBytes(video.size)}</small></button>{canDelete && <button onClick={() => remove(video)}><Trash2 size={16} /></button>}</div></article>
 }
 
 function VideoPlayerPage({ video, videos, profile, engagement, update, close, select }) {
-  const url = useFileUrl(video.id)
+  const url = video.url
   const [comment, setComment] = useState('')
   const details = engagement[video.id] || { likes: 0, liked: false, comments: [] }
   const saveDetails = (next) => update({ videoEngagement: { ...engagement, [video.id]: next } })
@@ -289,7 +295,7 @@ function VideoPlayerPage({ video, videos, profile, engagement, update, close, se
 }
 
 function RecommendedVideo({ video, select }) {
-  const url = useFileUrl(video.id)
+  const url = video.url
   return <button className="recommended-video" onClick={() => { select(video.id); window.scrollTo(0, 0) }}><span><video src={url} muted preload="metadata" /><i><Play size={16} fill="currentColor" /></i></span><div><b>{video.title}</b><small>{formatBytes(video.size)}</small></div></button>
 }
 
@@ -299,6 +305,89 @@ function FriendsPage({ data, update, openChat }) {
   const add = () => { if (!name.trim()) return; update({ friends: [...data.friends, { id: crypto.randomUUID(), name: name.trim() }] }); setName(''); setOpen(false) }
   const remove = (id) => { const chats = { ...data.chats }; delete chats[id]; update({ friends: data.friends.filter((friend) => friend.id !== id), chats }) }
   return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">КОНТАКТЫ</span><h2>Друзья</h2><p>Добавляйте контакты и начинайте локальную переписку.</p></div><button className="primary" onClick={() => setOpen(true)}><UserPlus />Добавить друга</button></div>{data.friends.length === 0 ? <Empty icon={UserPlus} title="Список друзей пуст" text="Добавьте первый контакт. Для него автоматически станет доступен диалог." action={() => setOpen(true)} actionText="Добавить друга" /> : <div className="friends-grid">{data.friends.map((friend) => <article className="friend-card panel" key={friend.id}><Avatar profile={friend} size={58} /><div><h3>{friend.name}</h3><small>Локальный контакт</small></div><button onClick={() => openChat(friend.id)}><MessageCircle size={18} />Написать</button><button className="danger" onClick={() => remove(friend.id)}><Trash2 size={17} /></button></article>)}</div>}{open && <Modal title="Добавить друга" close={() => setOpen(false)}><label className="field">Имя<input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Имя друга" /></label><button className="primary full" onClick={add}>Добавить</button></Modal>}</main>
+}
+
+function NetworkMessagesPage({ data, users, currentUser }) {
+  const contacts = users.filter((user) => user.uid !== currentUser.uid)
+  const [selected, setSelected] = useState(contacts[0]?.uid || '')
+  const [messages, setMessages] = useState([])
+  const [text, setText] = useState('')
+  const [call, setCall] = useState(null)
+  const [incoming, setIncoming] = useState(null)
+  const contact = contacts.find((user) => user.uid === selected)
+  const chatId = selected ? [currentUser.uid, selected].sort().join('_') : ''
+
+  useEffect(() => { if (!selected && contacts[0]) setSelected(contacts[0].uid) }, [contacts.length])
+  useEffect(() => {
+    if (!chatId) { setMessages([]); return }
+    return onSnapshot(query(collection(db, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc')), (snapshot) => setMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), time: item.data().createdAt?.toMillis?.() || Date.now() }))))
+  }, [chatId])
+  useEffect(() => onSnapshot(query(collection(db, 'calls'), where('calleeId', '==', currentUser.uid), where('status', '==', 'ringing')), (snapshot) => {
+    const item = snapshot.docs[0]
+    setIncoming(item ? { id: item.id, ...item.data() } : null)
+  }), [currentUser.uid])
+
+  const send = async (event) => {
+    event.preventDefault()
+    if (!text.trim() || !contact) return
+    await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: text.trim() }, { merge: true })
+    await addDoc(collection(db, 'chats', chatId, 'messages'), { text: text.trim(), senderId: currentUser.uid, author: data.profile.name, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+    setText('')
+  }
+  const startCall = async (mode) => {
+    if (!contact) return
+    const callRef = await addDoc(collection(db, 'calls'), { callerId: currentUser.uid, caller: data.profile, calleeId: contact.uid, callee: contact, mode, status: 'ringing', createdAt: serverTimestamp() })
+    setCall({ id: callRef.id, mode, target: contact, role: 'caller' })
+  }
+  const acceptCall = () => { setCall({ id: incoming.id, mode: incoming.mode, target: incoming.caller, role: 'callee' }); setIncoming(null) }
+  const rejectCall = async () => { await updateDoc(doc(db, 'calls', incoming.id), { status: 'rejected' }); setIncoming(null) }
+
+  return <><main className="messages-shell panel"><aside><div className="chat-sidebar-title"><h2>Люди</h2></div>{contacts.length === 0 && <p className="no-conversations">Пока нет других зарегистрированных пользователей.</p>}{contacts.map((user) => <button className={selected === user.uid ? 'active' : ''} onClick={() => setSelected(user.uid)} key={user.uid}><Avatar profile={user} /><span><b>{user.name}</b><small>@{user.username}</small></span></button>)}</aside>{contact ? <section className="dialog"><header><Avatar profile={contact} /><div><b>{contact.name}</b><small>аккаунт Mostor</small></div><button className="call-start" onClick={() => startCall('audio')}><Phone size={18} /></button><button className="call-start" onClick={() => startCall('video')}><Video size={19} /></button></header><div className="message-list">{messages.length === 0 && <div className="dialog-empty"><MessageCircle /><p>Напишите первое сообщение</p></div>}{messages.map((message) => <div className={message.senderId === currentUser.uid ? 'message mine' : 'message'} key={message.id}>{message.text}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>)}</div><form onSubmit={send}><button type="button"><Paperclip /></button><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Сообщение..." /><button className="send"><Send /></button></form></section> : <section className="dialog-placeholder"><MessageCircle /><h3>Выберите пользователя</h3></section>}</main>{incoming && <div className="incoming-call"><Avatar profile={incoming.caller} size={70} /><div><span>Входящий {incoming.mode === 'video' ? 'видеозвонок' : 'звонок'}</span><h3>{incoming.caller?.name}</h3></div><button className="accept" onClick={acceptCall}><Phone /></button><button className="reject" onClick={rejectCall}><PhoneOff /></button></div>}{call && <WebRTCCall call={call} currentUser={currentUser} close={() => setCall(null)} />}</>
+}
+
+function WebRTCCall({ call, currentUser, close }) {
+  const [localStream, setLocalStream] = useState(null)
+  const [remoteStream, setRemoteStream] = useState(null)
+  const [muted, setMuted] = useState(false)
+  const [videoOff, setVideoOff] = useState(call.mode === 'audio')
+  const [status, setStatus] = useState('Подключение...')
+  const localVideo = useRef(null)
+  const remoteVideo = useRef(null)
+
+  useEffect(() => {
+    const peer = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }] })
+    const callRef = doc(db, 'calls', call.id)
+    const localCandidates = collection(callRef, call.role === 'caller' ? 'callerCandidates' : 'calleeCandidates')
+    const remoteCandidates = collection(callRef, call.role === 'caller' ? 'calleeCandidates' : 'callerCandidates')
+    const remote = new MediaStream(); setRemoteStream(remote)
+    peer.ontrack = (event) => event.streams[0].getTracks().forEach((track) => remote.addTrack(track))
+    peer.onconnectionstatechange = () => setStatus(peer.connectionState === 'connected' ? 'Соединение установлено' : peer.connectionState)
+    peer.onicecandidate = (event) => { if (event.candidate) addDoc(localCandidates, event.candidate.toJSON()) }
+    let stream
+    navigator.mediaDevices.getUserMedia({ audio: true, video: call.mode === 'video' }).then(async (media) => {
+      stream = media; setLocalStream(media); media.getTracks().forEach((track) => peer.addTrack(track, media))
+      if (call.role === 'caller') {
+        const offer = await peer.createOffer(); await peer.setLocalDescription(offer); await updateDoc(callRef, { offer: { type: offer.type, sdp: offer.sdp } })
+      } else {
+        const snapshot = await getDoc(callRef); const offer = snapshot.data().offer
+        if (!offer) { setStatus('Ожидание предложения...'); return }
+        await peer.setRemoteDescription(offer); const answer = await peer.createAnswer(); await peer.setLocalDescription(answer); await updateDoc(callRef, { answer: { type: answer.type, sdp: answer.sdp }, status: 'active' })
+      }
+    }).catch(() => setStatus('Нет доступа к камере или микрофону'))
+    const unsubCall = onSnapshot(callRef, async (snapshot) => {
+      const value = snapshot.data(); if (!value) return
+      if (call.role === 'caller' && value.answer && !peer.currentRemoteDescription) await peer.setRemoteDescription(value.answer)
+      if (value.status === 'ended' || value.status === 'rejected') close()
+    })
+    const unsubCandidates = onSnapshot(remoteCandidates, (snapshot) => snapshot.docChanges().forEach((change) => { if (change.type === 'added') peer.addIceCandidate(change.doc.data()) }))
+    return () => { unsubCall(); unsubCandidates(); stream?.getTracks().forEach((track) => track.stop()); peer.close() }
+  }, [call.id])
+  useEffect(() => { if (localVideo.current && localStream) localVideo.current.srcObject = localStream }, [localStream])
+  useEffect(() => { if (remoteVideo.current && remoteStream) remoteVideo.current.srcObject = remoteStream }, [remoteStream])
+  const finish = async () => { await updateDoc(doc(db, 'calls', call.id), { status: 'ended' }); close() }
+  const toggleMute = () => { localStream?.getAudioTracks().forEach((track) => { track.enabled = muted }); setMuted(!muted) }
+  const toggleVideo = () => { localStream?.getVideoTracks().forEach((track) => { track.enabled = videoOff }); setVideoOff(!videoOff) }
+  return <div className="call-overlay"><div className="call-stage"><video className="remote-call-video" ref={remoteVideo} autoPlay playsInline />{call.mode === 'video' && <video className="local-call-video" ref={localVideo} autoPlay muted playsInline />} {!remoteStream?.active && <div className="call-avatar"><Avatar profile={call.target} size={112} /><h2>{call.target.name}</h2><p>{status}</p></div>}<div className="call-meta"><span>{call.mode === 'video' ? 'Видеозвонок' : 'Аудиозвонок'}</span><b>{status}</b></div><div className="call-controls"><button className={muted ? 'off' : ''} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}</button>{call.mode === 'video' && <button className={videoOff ? 'off' : ''} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}</button>}<button className="hangup" onClick={finish}><PhoneOff /></button></div></div></div>
 }
 
 function MessagesPage({ data, update, initialFriend }) {
@@ -341,17 +430,21 @@ function CallOverlay({ call, close }) {
   return <div className="call-overlay"><div className="call-stage">{call.mode === 'video' && stream && !videoOff ? <video ref={videoRef} autoPlay muted playsInline /> : <div className="call-avatar"><Avatar profile={call.target} size={112} /><h2>{call.target.name}</h2><p>{error || (stream ? 'Соединение установлено' : 'Подключение...')}</p></div>}<div className="call-meta"><span>{call.mode === 'video' ? 'Видеозвонок' : 'Аудиозвонок'}</span><b>{String(Math.floor(seconds / 60)).padStart(2, '0')}:{String(seconds % 60).padStart(2, '0')}</b></div><div className="call-controls"><button className={muted ? 'off' : ''} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}</button>{call.mode === 'video' && <button className={videoOff ? 'off' : ''} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}</button>}<button className="hangup" onClick={finish}><PhoneOff /></button></div></div></div>
 }
 
-function CloudPage({ data, update }) {
+function CloudPage({ data, update, currentUser, remoteFiles }) {
   const input = useRef(null)
+  const [progress, setProgress] = useState(0)
   const upload = async (files) => {
-    const added = []
-    for (const file of files) { const id = crypto.randomUUID(); await putFile(id, file); added.push({ id, name: file.name, size: file.size, type: file.type, createdAt: Date.now() }) }
-    update({ cloudFiles: [...added, ...data.cloudFiles] })
+    for (const file of files) {
+      const id = crypto.randomUUID(); const path = `files/${currentUser.uid}/${id}-${file.name}`
+      const task = uploadBytesResumable(storageRef(storage, path), file)
+      await new Promise((resolve, reject) => task.on('state_changed', (snapshot) => setProgress(Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100)), reject, async () => { const url = await getDownloadURL(task.snapshot.ref); await setDoc(doc(db, 'files', id), { uid: currentUser.uid, name: file.name, size: file.size, type: file.type, path, url, createdAt: serverTimestamp() }); resolve() }))
+    }
+    setProgress(0)
   }
-  const download = async (file) => { const blob = await getFile(file.id); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); URL.revokeObjectURL(url) }
-  const remove = async (file) => { await removeFile(file.id); update({ cloudFiles: data.cloudFiles.filter((item) => item.id !== file.id) }) }
-  const used = data.cloudFiles.reduce((sum, file) => sum + file.size, 0)
-  return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR CLOUD</span><h2>Облако</h2><p>Файлы сохраняются приватно на этом устройстве.</p></div><button className="primary" onClick={() => input.current.click()}><Upload />Загрузить файлы</button><input ref={input} hidden multiple type="file" onChange={(e) => upload([...e.target.files])} /></div><div className="storage-meter panel"><HardDrive /><div><span><b>{formatBytes(used)}</b> занято</span><i><em style={{ width: `${Math.min(100, used / 1048576)}%` }} /></i><small>Локальное защищенное хранилище браузера</small></div></div>{data.cloudFiles.length === 0 ? <Empty icon={Cloud} title="Облако пустое" text="Загружайте документы, изображения, архивы и другие файлы." action={() => input.current.click()} actionText="Загрузить файлы" /> : <div className="file-list panel">{data.cloudFiles.map((file) => <article key={file.id}><span><FolderOpen /></span><div><b>{file.name}</b><small>{formatBytes(file.size)} · {new Date(file.createdAt).toLocaleDateString('ru')}</small></div><button onClick={() => download(file)}><Download /></button><button onClick={() => remove(file)}><Trash2 /></button></article>)}</div>}</main>
+  const download = (file) => { const link = document.createElement('a'); link.href = file.url; link.download = file.name; link.target = '_blank'; link.click() }
+  const remove = async (file) => { await deleteObject(storageRef(storage, file.path)); await deleteDoc(doc(db, 'files', file.id)) }
+  const used = remoteFiles.reduce((sum, file) => sum + file.size, 0)
+  return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR CLOUD</span><h2>Облако</h2><p>Большие файлы хранятся в Firebase Storage и доступны с ваших устройств.</p></div><button className="primary" onClick={() => input.current.click()}><Upload />Загрузить файлы</button><input ref={input} hidden multiple type="file" onChange={(e) => upload([...e.target.files])} /></div>{progress > 0 && <div className="upload-progress panel"><span>Загрузка файла</span><i><em style={{ width: `${progress}%` }} /></i><b>{progress}%</b></div>}<div className="storage-meter panel"><HardDrive /><div><span><b>{formatBytes(used)}</b> занято</span><i><em style={{ width: `${Math.min(100, used / 104857600 * 100)}%` }} /></i><small>Личное Firebase-хранилище</small></div></div>{remoteFiles.length === 0 ? <Empty icon={Cloud} title="Облако пустое" text="Загружайте документы, изображения, архивы и другие большие файлы." action={() => input.current.click()} actionText="Загрузить файлы" /> : <div className="file-list panel">{remoteFiles.map((file) => <article key={file.id}><span><FolderOpen /></span><div><b>{file.name}</b><small>{formatBytes(file.size)} · {new Date(file.createdAt).toLocaleDateString('ru')}</small></div><button onClick={() => download(file)}><Download /></button><button onClick={() => remove(file)}><Trash2 /></button></article>)}</div>}</main>
 }
 
 function ProfilePage({ data, update, currentUser }) {
@@ -453,6 +546,9 @@ export default function App() {
   const [data, update] = useStoredData()
   const [currentUser, setCurrentUser] = useState(undefined)
   const [sharedPosts, setSharedPosts] = useState([])
+  const [networkUsers, setNetworkUsers] = useState([])
+  const [remoteVideos, setRemoteVideos] = useState([])
+  const [remoteFiles, setRemoteFiles] = useState([])
   const [active, setActive] = useState('feed')
   const [query, setQuery] = useState('')
   const [menu, setMenu] = useState(false)
@@ -472,6 +568,13 @@ export default function App() {
     if (!currentUser) { setSharedPosts([]); return }
     return onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc')), (snapshot) => setSharedPosts(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
   }, [currentUser])
+  useEffect(() => {
+    if (!currentUser) return
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => setNetworkUsers(snapshot.docs.map((item) => ({ uid: item.id, ...item.data() }))))
+    const unsubVideos = onSnapshot(query(collection(db, 'videos'), orderBy('createdAt', 'desc')), (snapshot) => setRemoteVideos(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
+    const unsubFiles = onSnapshot(query(collection(db, 'files'), where('uid', '==', currentUser.uid)), (snapshot) => setRemoteFiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
+    return () => { unsubUsers(); unsubVideos(); unsubFiles() }
+  }, [currentUser])
   const createPost = async (post) => { const { id, fileId, ...publicPost } = post; await addDoc(collection(db, 'posts'), { ...publicPost, uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() }) }
   const deleteSharedPost = async (post) => { if (post.uid === currentUser.uid) await deleteDoc(doc(db, 'posts', post.id)) }
   const openChat = (id) => { setChatFriend(id); navigate('messages') }
@@ -484,12 +587,12 @@ export default function App() {
     <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={query} setQuery={setQuery} openMenu={() => setMenu(true)} profile={data.profile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />
       {active === 'feed' && <FeedPage data={data} update={update} posts={sharedPosts} currentUid={currentUser.uid} deletePost={deleteSharedPost} openComposer={() => setComposer(true)} />}
       {active === 'channels' && <ChannelsPage data={data} update={update} />}
-      {active === 'video' && <VideosPage data={data} update={update} selectedVideo={selectedVideo} setSelectedVideo={setSelectedVideo} />}
+      {active === 'video' && <VideosPage data={data} update={update} selectedVideo={selectedVideo} setSelectedVideo={setSelectedVideo} currentUser={currentUser} remoteVideos={remoteVideos} />}
       {active === 'games' && <GamesPage data={data} update={update} />}
       {active === 'gifts' && <GiftsPage data={data} update={update} />}
-      {active === 'messages' && <MessagesPage data={data} update={update} initialFriend={chatFriend} />}
+      {active === 'messages' && <NetworkMessagesPage data={data} users={networkUsers} currentUser={currentUser} />}
       {active === 'friends' && <FriendsPage data={data} update={update} openChat={openChat} />}
-      {active === 'cloud' && <CloudPage data={data} update={update} />}
+      {active === 'cloud' && <CloudPage data={data} update={update} currentUser={currentUser} remoteFiles={remoteFiles} />}
       {active === 'labs' && <LabsPage data={data} update={update} />}
       {active === 'profile' && <ProfilePage data={data} update={update} currentUser={currentUser} />}
     </div>

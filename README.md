@@ -23,5 +23,6 @@ npm run build:apk
 1. В Firebase Console откройте `Build -> Authentication -> Sign-in method` и включите `Email/Password`.
 2. Откройте `Build -> Firestore Database`, создайте базу данных.
 3. В разделе Firestore `Rules` вставьте содержимое `firestore.rules` и нажмите `Publish`.
+4. Откройте `Build -> Storage`, создайте хранилище, затем во вкладке `Rules` вставьте содержимое `storage.rules` и нажмите `Publish`.
 
 После этого зарегистрированные пользователи видят общую ленту на всех устройствах.
