@@ -44,6 +44,7 @@ const navItems = [
   ['games', 'Игры', Gamepad2],
   ['gifts', 'Подарки', Gift],
   ['messages', 'Сообщения', MessageCircle],
+  ['calls', 'Звонки', Phone],
   ['friends', 'Друзья', UserPlus],
   ['cloud', 'Облако', Cloud],
   ['labs', 'Mostor Labs', FlaskConical],
@@ -314,6 +315,8 @@ function NetworkMessagesPage({ data, users, currentUser }) {
   const [text, setText] = useState('')
   const [call, setCall] = useState(null)
   const [incoming, setIncoming] = useState(null)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const fileInput = useRef(null)
   const contact = contacts.find((user) => user.uid === selected)
   const chatId = selected ? [currentUser.uid, selected].sort().join('_') : ''
 
@@ -334,15 +337,48 @@ function NetworkMessagesPage({ data, users, currentUser }) {
     await addDoc(collection(db, 'chats', chatId, 'messages'), { text: text.trim(), senderId: currentUser.uid, author: data.profile.name, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
     setText('')
   }
+  const attachFile = async (file) => {
+    if (!file || !contact) return
+    const id = crypto.randomUUID(); const path = `chatFiles/${chatId}/${currentUser.uid}/${id}-${file.name}`
+    const task = uploadBytesResumable(storageRef(storage, path), file)
+    task.on('state_changed', (snapshot) => setUploadProgress(Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100)), () => setUploadProgress(0), async () => {
+      const fileUrl = await getDownloadURL(task.snapshot.ref)
+      await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: `Файл: ${file.name}` }, { merge: true })
+      await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, attachment: { name: file.name, size: file.size, type: file.type, url: fileUrl, path }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+      setUploadProgress(0); fileInput.current.value = ''
+    })
+  }
   const startCall = async (mode) => {
     if (!contact) return
-    const callRef = await addDoc(collection(db, 'calls'), { callerId: currentUser.uid, caller: data.profile, calleeId: contact.uid, callee: contact, mode, status: 'ringing', createdAt: serverTimestamp() })
+    await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: mode === 'video' ? 'Видеозвонок' : 'Звонок' }, { merge: true })
+    const messageRef = await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', systemType: 'call', mode, senderId: currentUser.uid, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+    const callRef = await addDoc(collection(db, 'calls'), { callerId: currentUser.uid, caller: data.profile, calleeId: contact.uid, callee: contact, mode, status: 'ringing', chatId, messageId: messageRef.id, createdAt: serverTimestamp() })
     setCall({ id: callRef.id, mode, target: contact, role: 'caller' })
   }
   const acceptCall = () => { setCall({ id: incoming.id, mode: incoming.mode, target: incoming.caller, role: 'callee' }); setIncoming(null) }
-  const rejectCall = async () => { await updateDoc(doc(db, 'calls', incoming.id), { status: 'rejected' }); setIncoming(null) }
+  const rejectCall = async () => { await updateDoc(doc(db, 'calls', incoming.id), { status: 'missed', endedAt: serverTimestamp() }); if (incoming.chatId && incoming.messageId) await updateDoc(doc(db, 'chats', incoming.chatId, 'messages', incoming.messageId), { systemType: 'missed' }); setIncoming(null) }
 
-  return <><main className="messages-shell panel"><aside><div className="chat-sidebar-title"><h2>Люди</h2></div>{contacts.length === 0 && <p className="no-conversations">Пока нет других зарегистрированных пользователей.</p>}{contacts.map((user) => <button className={selected === user.uid ? 'active' : ''} onClick={() => setSelected(user.uid)} key={user.uid}><Avatar profile={user} /><span><b>{user.name}</b><small>@{user.username}</small></span></button>)}</aside>{contact ? <section className="dialog"><header><Avatar profile={contact} /><div><b>{contact.name}</b><small>аккаунт Mostor</small></div><button className="call-start" onClick={() => startCall('audio')}><Phone size={18} /></button><button className="call-start" onClick={() => startCall('video')}><Video size={19} /></button></header><div className="message-list">{messages.length === 0 && <div className="dialog-empty"><MessageCircle /><p>Напишите первое сообщение</p></div>}{messages.map((message) => <div className={message.senderId === currentUser.uid ? 'message mine' : 'message'} key={message.id}>{message.text}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>)}</div><form onSubmit={send}><button type="button"><Paperclip /></button><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Сообщение..." /><button className="send"><Send /></button></form></section> : <section className="dialog-placeholder"><MessageCircle /><h3>Выберите пользователя</h3></section>}</main>{incoming && <div className="incoming-call"><Avatar profile={incoming.caller} size={70} /><div><span>Входящий {incoming.mode === 'video' ? 'видеозвонок' : 'звонок'}</span><h3>{incoming.caller?.name}</h3></div><button className="accept" onClick={acceptCall}><Phone /></button><button className="reject" onClick={rejectCall}><PhoneOff /></button></div>}{call && <WebRTCCall call={call} currentUser={currentUser} close={() => setCall(null)} />}</>
+  return <><main className="messages-shell panel"><aside><div className="chat-sidebar-title"><h2>Люди</h2></div>{contacts.length === 0 && <p className="no-conversations">Пока нет других зарегистрированных пользователей.</p>}{contacts.map((user) => <button className={selected === user.uid ? 'active' : ''} onClick={() => setSelected(user.uid)} key={user.uid}><Avatar profile={user} /><span><b>{user.name}</b><small>@{user.username}</small></span></button>)}</aside>{contact ? <section className="dialog"><header><Avatar profile={contact} /><div><b>{contact.name}</b><small>аккаунт Mostor</small></div><button className="call-start" onClick={() => startCall('audio')}><Phone size={18} /></button><button className="call-start" onClick={() => startCall('video')}><Video size={19} /></button></header><div className="message-list">{messages.length === 0 && <div className="dialog-empty"><MessageCircle /><p>Напишите первое сообщение</p></div>}{messages.map((message) => <ChatMessage message={message} mine={message.senderId === currentUser.uid} key={message.id} />)}</div>{uploadProgress > 0 && <div className="chat-upload"><i><em style={{ width: `${uploadProgress}%` }} /></i><span>{uploadProgress}%</span></div>}<form onSubmit={send}><button type="button" onClick={() => fileInput.current.click()}><Paperclip /></button><input ref={fileInput} hidden type="file" onChange={(event) => attachFile(event.target.files[0])} /><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Сообщение..." /><button className="send"><Send /></button></form></section> : <section className="dialog-placeholder"><MessageCircle /><h3>Выберите пользователя</h3></section>}</main>{incoming && <div className="incoming-call"><Avatar profile={incoming.caller} size={70} /><div><span>Входящий {incoming.mode === 'video' ? 'видеозвонок' : 'звонок'}</span><h3>{incoming.caller?.name}</h3></div><button className="accept" onClick={acceptCall}><Phone /></button><button className="reject" onClick={rejectCall}><PhoneOff /></button></div>}{call && <WebRTCCall call={call} currentUser={currentUser} close={() => setCall(null)} />}</>
+}
+
+function ChatMessage({ message, mine }) {
+  const attachment = message.attachment
+  const callText = message.systemType === 'missed' ? 'Пропущенный звонок' : mine ? 'Исходящий звонок' : 'Входящий звонок'
+  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>
+}
+
+function CallsPage({ calls, users, currentUser, profile }) {
+  const [filter, setFilter] = useState('all')
+  const [activeCall, setActiveCall] = useState(null)
+  const visible = calls.filter((call) => filter === 'all' || call.status === 'missed')
+  const startAgain = async (entry, mode) => {
+    const targetId = entry.callerId === currentUser.uid ? entry.calleeId : entry.callerId
+    const target = users.find((user) => user.uid === targetId)
+    if (!target) return
+    const callRef = await addDoc(collection(db, 'calls'), { callerId: currentUser.uid, caller: profile, calleeId: target.uid, callee: target, mode, status: 'ringing', createdAt: serverTimestamp() })
+    setActiveCall({ id: callRef.id, mode, target, role: 'caller' })
+  }
+  return <><main className="content-page"><div className="page-heading"><div><span className="eyebrow">СВЯЗЬ</span><h2>Звонки</h2><p>История аудио- и видеовызовов Mostor.</p></div></div><div className="call-filters"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>Все</button><button className={filter === 'missed' ? 'active' : ''} onClick={() => setFilter('missed')}>Пропущенные</button></div>{visible.length === 0 ? <Empty icon={Phone} title="История звонков пуста" text="Начните аудио- или видеозвонок из раздела сообщений." /> : <div className="call-history panel">{visible.map((entry) => { const outgoing = entry.callerId === currentUser.uid; const person = outgoing ? entry.callee : entry.caller; return <article key={entry.id}><Avatar profile={person} size={48} /><div><b>{person?.name || 'Пользователь'}</b><span className={entry.status === 'missed' ? 'missed' : ''}>{entry.status === 'missed' ? <PhoneOff /> : outgoing ? <Phone /> : <Phone />} {entry.status === 'missed' ? 'Пропущенный' : outgoing ? 'Исходящий' : 'Входящий'} · {entry.mode === 'video' ? 'видео' : 'аудио'}</span><small>{new Date(entry.createdAt).toLocaleString('ru')}</small></div><button onClick={() => startAgain(entry, 'audio')}><Phone /></button><button onClick={() => startAgain(entry, 'video')}><Video /></button></article> })}</div>}</main>{activeCall && <WebRTCCall call={activeCall} currentUser={currentUser} close={() => setActiveCall(null)} />}</>
 }
 
 function WebRTCCall({ call, currentUser, close }) {
@@ -549,6 +585,8 @@ export default function App() {
   const [networkUsers, setNetworkUsers] = useState([])
   const [remoteVideos, setRemoteVideos] = useState([])
   const [remoteFiles, setRemoteFiles] = useState([])
+  const [outgoingCalls, setOutgoingCalls] = useState([])
+  const [incomingCalls, setIncomingCalls] = useState([])
   const [active, setActive] = useState('feed')
   const [searchQuery, setSearchQuery] = useState('')
   const [menu, setMenu] = useState(false)
@@ -578,6 +616,13 @@ export default function App() {
   }, [currentUser])
   useEffect(() => {
     if (!currentUser) return
+    const mapCalls = (snapshot) => snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))
+    const unsubOutgoing = onSnapshot(query(collection(db, 'calls'), where('callerId', '==', currentUser.uid)), (snapshot) => setOutgoingCalls(mapCalls(snapshot)))
+    const unsubIncoming = onSnapshot(query(collection(db, 'calls'), where('calleeId', '==', currentUser.uid)), (snapshot) => setIncomingCalls(mapCalls(snapshot)))
+    return () => { unsubOutgoing(); unsubIncoming() }
+  }, [currentUser])
+  useEffect(() => {
+    if (!currentUser) return
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => setNetworkUsers(snapshot.docs.map((item) => ({ uid: item.id, ...item.data() }))))
     const unsubVideos = onSnapshot(query(collection(db, 'videos'), orderBy('createdAt', 'desc')), (snapshot) => setRemoteVideos(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
     const unsubFiles = onSnapshot(query(collection(db, 'files'), where('uid', '==', currentUser.uid)), (snapshot) => setRemoteFiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))))
@@ -599,6 +644,7 @@ export default function App() {
       {active === 'games' && <GamesPage data={data} update={update} />}
       {active === 'gifts' && <GiftsPage data={data} update={update} />}
       {active === 'messages' && <NetworkMessagesPage data={data} users={networkUsers} currentUser={currentUser} />}
+      {active === 'calls' && <CallsPage calls={[...outgoingCalls, ...incomingCalls].sort((a, b) => b.createdAt - a.createdAt)} users={networkUsers} currentUser={currentUser} profile={data.profile} />}
       {active === 'friends' && <FriendsPage data={data} update={update} openChat={openChat} />}
       {active === 'cloud' && <CloudPage data={data} update={update} currentUser={currentUser} remoteFiles={remoteFiles} />}
       {active === 'labs' && <LabsPage data={data} update={update} />}
