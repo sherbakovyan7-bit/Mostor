@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth'
 import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore'
-import { deleteObject, getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage'
 import {
   ArrowLeft, Bell, Bookmark, Check, Cloud, Download, Film, FolderOpen, Gamepad2,
   FlaskConical, Gift, HardDrive, Heart, Home, Image, Menu, MessageCircle, MoreHorizontal,
@@ -9,7 +8,7 @@ import {
   Send, Settings, ShoppingBag, Smile, Trophy, Trash2, Upload, UserPlus, Users,
   Video, VideoOff, X, Zap,
 } from 'lucide-react'
-import { auth, db, storage } from './firebase'
+import { auth, db } from './firebase'
 
 const initialData = {
   profile: { name: 'Ян', username: 'yan', bio: 'Основатель Mostor', avatar: '' },
@@ -171,6 +170,11 @@ function Empty({ icon: Icon, title, text, action, actionText }) {
   return <div className="empty-state"><span><Icon /></span><h2>{title}</h2><p>{text}</p>{action && <button className="primary" onClick={action}><Plus size={18} />{actionText}</button>}</div>
 }
 
+function FreeStorageNotice({ type }) {
+  const video = type === 'video'
+  return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">БЕСПЛАТНЫЙ РЕЖИМ</span><h2>{video ? 'Видеохостинг' : 'Облако'}</h2><p>Firebase Storage требует платный тариф Blaze.</p></div></div><Empty icon={video ? Video : Cloud} title={video ? 'Большие видео временно отключены' : 'Большие файлы временно отключены'} text="В бесплатной версии можно отправлять изображения и файлы до 600 КБ через сообщения. Они сохраняются прямо в Firestore и доступны собеседнику." /></main>
+}
+
 function AuthScreen() {
   const [mode, setMode] = useState('register')
   const [name, setName] = useState('')
@@ -316,6 +320,7 @@ function NetworkMessagesPage({ data, users, currentUser }) {
   const [call, setCall] = useState(null)
   const [incoming, setIncoming] = useState(null)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [attachmentError, setAttachmentError] = useState('')
   const fileInput = useRef(null)
   const contact = contacts.find((user) => user.uid === selected)
   const chatId = selected ? [currentUser.uid, selected].sort().join('_') : ''
@@ -339,14 +344,14 @@ function NetworkMessagesPage({ data, users, currentUser }) {
   }
   const attachFile = async (file) => {
     if (!file || !contact) return
-    const id = crypto.randomUUID(); const path = `chatFiles/${chatId}/${currentUser.uid}/${id}-${file.name}`
-    const task = uploadBytesResumable(storageRef(storage, path), file)
-    task.on('state_changed', (snapshot) => setUploadProgress(Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100)), () => setUploadProgress(0), async () => {
-      const fileUrl = await getDownloadURL(task.snapshot.ref)
-      await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: `Файл: ${file.name}` }, { merge: true })
-      await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, attachment: { name: file.name, size: file.size, type: file.type, url: fileUrl, path }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
-      setUploadProgress(0); fileInput.current.value = ''
-    })
+    setAttachmentError('')
+    if (file.size > 600 * 1024) { setAttachmentError('Файл слишком большой. Бесплатный лимит: 600 КБ.'); window.alert('Файл слишком большой. Бесплатный лимит: 600 КБ.'); fileInput.current.value = ''; return }
+    setUploadProgress(25)
+    const fileUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file) })
+    setUploadProgress(70)
+    await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: `Файл: ${file.name}` }, { merge: true })
+    await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, attachment: { name: file.name, size: file.size, type: file.type, url: fileUrl }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+    setUploadProgress(100); setTimeout(() => setUploadProgress(0), 350); fileInput.current.value = ''
   }
   const startCall = async (mode) => {
     if (!contact) return
@@ -640,13 +645,13 @@ export default function App() {
     <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={searchQuery} setQuery={setSearchQuery} openMenu={() => setMenu(true)} profile={data.profile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />
       {active === 'feed' && <FeedPage data={data} update={update} posts={sharedPosts} currentUid={currentUser.uid} deletePost={deleteSharedPost} openComposer={() => setComposer(true)} />}
       {active === 'channels' && <ChannelsPage data={data} update={update} />}
-      {active === 'video' && <VideosPage data={data} update={update} selectedVideo={selectedVideo} setSelectedVideo={setSelectedVideo} currentUser={currentUser} remoteVideos={remoteVideos} />}
+      {active === 'video' && <FreeStorageNotice type="video" />}
       {active === 'games' && <GamesPage data={data} update={update} />}
       {active === 'gifts' && <GiftsPage data={data} update={update} />}
       {active === 'messages' && <NetworkMessagesPage data={data} users={networkUsers} currentUser={currentUser} />}
       {active === 'calls' && <CallsPage calls={[...outgoingCalls, ...incomingCalls].sort((a, b) => b.createdAt - a.createdAt)} users={networkUsers} currentUser={currentUser} profile={data.profile} />}
       {active === 'friends' && <FriendsPage data={data} update={update} openChat={openChat} />}
-      {active === 'cloud' && <CloudPage data={data} update={update} currentUser={currentUser} remoteFiles={remoteFiles} />}
+      {active === 'cloud' && <FreeStorageNotice type="cloud" />}
       {active === 'labs' && <LabsPage data={data} update={update} />}
       {active === 'profile' && <ProfilePage data={data} update={update} currentUser={currentUser} />}
     </div>
