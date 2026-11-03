@@ -459,7 +459,7 @@ function ProfilePage({ data, update, currentUser }) {
 function Preference({ label, text, active, toggle }) { return <button className="preference" onClick={toggle}><span><b>{label}</b><small>{text}</small></span><i className={active ? 'active' : ''}><em /></i></button> }
 
 function LabsPage({ data, update }) {
-  const [searchQuery, setSearchQuery] = useState('')
+  const [query, setQuery] = useState('')
   const [group, setGroup] = useState('Все')
   const flags = data.labFlags || {}
   const filtered = labFeatures.filter((feature) => (group === 'Все' || feature.group === group) && feature.name.toLowerCase().includes(query.toLowerCase()))
@@ -550,7 +550,7 @@ export default function App() {
   const [remoteVideos, setRemoteVideos] = useState([])
   const [remoteFiles, setRemoteFiles] = useState([])
   const [active, setActive] = useState('feed')
-  const [query, setQuery] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
   const [menu, setMenu] = useState(false)
   const [composer, setComposer] = useState(false)
   const [chatFriend, setChatFriend] = useState('')
