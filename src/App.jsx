@@ -423,7 +423,13 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend, stickerP
   useEffect(() => { if (initialFriend) setSelected(initialFriend) }, [initialFriend])
   useEffect(() => {
     if (!chatId) { setMessages([]); return }
-    return onSnapshot(query(collection(db, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc')), (snapshot) => setMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), time: item.data().createdAt?.toMillis?.() || Date.now() }))))
+    return onSnapshot(query(collection(db, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc')), (snapshot) => {
+      const serverMessages = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), time: item.data().createdAt?.toMillis?.() || Date.now() }))
+      setMessages((current) => {
+        const serverIds = new Set(serverMessages.map((message) => message.id))
+        return [...serverMessages, ...current.filter((message) => message.pending && !serverIds.has(message.id))].sort((a, b) => a.time - b.time)
+      })
+    }, (error) => { if (error.code !== 'permission-denied') console.error(error) })
   }, [chatId])
   useEffect(() => {
     if (!chatId) return
@@ -432,7 +438,7 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend, stickerP
   useEffect(() => onSnapshot(query(collection(db, 'calls'), where('calleeId', '==', currentUser.uid), where('status', '==', 'ringing')), (snapshot) => {
     const item = snapshot.docs[0]
     setIncoming(item ? { id: item.id, ...item.data() } : null)
-  }), [currentUser.uid])
+  }, (error) => { if (error.code !== 'permission-denied') console.error(error) }), [currentUser.uid])
   useEffect(() => {
     if (!incoming) return
     navigator.vibrate?.([400, 250, 400, 800])
@@ -864,8 +870,6 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(undefined)
   const [sharedPosts, setSharedPosts] = useState([])
   const [networkUsers, setNetworkUsers] = useState([])
-  const [remoteVideos, setRemoteVideos] = useState([])
-  const [remoteFiles, setRemoteFiles] = useState([])
   const [musicTracks, setMusicTracks] = useState([])
   const [stickerPacks, setStickerPacks] = useState([])
   const [stories, setStories] = useState([])
@@ -876,7 +880,6 @@ export default function App() {
   const [menu, setMenu] = useState(false)
   const [composer, setComposer] = useState(false)
   const [chatFriend, setChatFriend] = useState('')
-  const [selectedVideo, setSelectedVideo] = useState('')
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [viewedProfile, setViewedProfile] = useState(null)
   useEffect(() => {
@@ -892,7 +895,7 @@ export default function App() {
     window.addEventListener('mostor:profile', showProfile)
     return () => window.removeEventListener('mostor:profile', showProfile)
   }, [])
-  const navigate = (page) => { setActive(page); if (page !== 'video') setSelectedVideo(''); setMenu(false); window.scrollTo(0, 0) }
+  const navigate = (page) => { setActive(page); setMenu(false); window.scrollTo(0, 0) }
   useEffect(() => onAuthStateChanged(auth, async (user) => {
     setCurrentUser(user || null)
     if (!user) return
@@ -902,7 +905,7 @@ export default function App() {
   }), [])
   useEffect(() => {
     if (!currentUser) { setSharedPosts([]); return }
-    return onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc')), (snapshot) => setSharedPosts(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), (error) => { if (error.code !== 'permission-denied') console.error(error) })
+    return onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc')), (snapshot) => { const server = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() })); setSharedPosts((current) => { const ids = new Set(server.map((item) => item.id)); return [...current.filter((item) => item.pending && !ids.has(item.id)), ...server] }) }, (error) => { if (error.code !== 'permission-denied') console.error(error) })
   }, [currentUser])
   useEffect(() => {
     if (!currentUser) return
@@ -916,12 +919,10 @@ export default function App() {
     if (!currentUser) return
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => setNetworkUsers(snapshot.docs.map((item) => ({ uid: item.id, ...item.data() }))), (error) => { if (error.code !== 'permission-denied') console.error(error) })
     const ignoreDenied = (error) => { if (error.code !== 'permission-denied') console.error(error) }
-    const unsubMusic = onSnapshot(query(collection(db, 'music'), orderBy('createdAt', 'desc')), (snapshot) => setMusicTracks(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
+    const unsubMusic = onSnapshot(query(collection(db, 'music'), orderBy('createdAt', 'desc')), (snapshot) => { const server = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() })); setMusicTracks((current) => { const ids = new Set(server.map((item) => item.id)); return [...current.filter((item) => item.pending && !ids.has(item.id)), ...server] }) }, ignoreDenied)
     const unsubStickers = onSnapshot(query(collection(db, 'stickerPacks'), orderBy('createdAt', 'desc')), (snapshot) => setStickerPacks(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))), ignoreDenied)
-    const unsubStories = onSnapshot(query(collection(db, 'stories'), orderBy('createdAt', 'desc')), (snapshot) => { const cutoff = Date.now() - 24 * 60 * 60 * 1000; setStories(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() })).filter((story) => story.createdAt > cutoff)) }, ignoreDenied)
-    const unsubVideos = onSnapshot(query(collection(db, 'videos'), orderBy('createdAt', 'desc')), (snapshot) => setRemoteVideos(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
-    const unsubFiles = onSnapshot(query(collection(db, 'files'), where('uid', '==', currentUser.uid)), (snapshot) => setRemoteFiles(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() }))), ignoreDenied)
-    return () => { unsubUsers(); unsubMusic(); unsubStickers(); unsubStories(); unsubVideos(); unsubFiles() }
+    const unsubStories = onSnapshot(query(collection(db, 'stories'), orderBy('createdAt', 'desc')), (snapshot) => { const cutoff = Date.now() - 24 * 60 * 60 * 1000; const server = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() })).filter((story) => story.createdAt > cutoff); setStories((current) => { const ids = new Set(server.map((item) => item.id)); return [...current.filter((item) => item.pending && !ids.has(item.id)), ...server] }) }, ignoreDenied)
+    return () => { unsubUsers(); unsubMusic(); unsubStickers(); unsubStories() }
   }, [currentUser])
   const createPost = async (post) => {
     const postRef = doc(collection(db, 'posts')); const { id, fileId, ...publicPost } = post

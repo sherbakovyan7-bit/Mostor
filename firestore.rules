@@ -12,33 +12,27 @@ service cloud.firestore {
     }
 
     match /posts/{postId} {
-      allow read, create: if signedIn();
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
       allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
     match /music/{trackId} {
-      allow read, create: if signedIn();
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
       allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
     match /stickerPacks/{packId} {
-      allow read, create: if signedIn();
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
       allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
     match /stories/{storyId} {
-      allow read, create: if signedIn();
-      allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
-    }
-
-    match /videos/{videoId} {
-      allow read, create: if signedIn();
-      allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
-    }
-
-    match /files/{fileId} {
+      allow read: if signedIn();
       allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
-      allow read, update, delete: if signedIn() && resource.data.uid == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
     match /chats/{chatId} {
@@ -47,7 +41,7 @@ service cloud.firestore {
 
       match /messages/{messageId} {
         allow read: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.members;
-        allow create: if signedIn() && request.resource.data.senderId == request.auth.uid && request.resource.size() < 900000 && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.members;
+        allow create: if signedIn() && request.resource.data.senderId == request.auth.uid && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.members;
         allow update: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.members;
       }
     }
