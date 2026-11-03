@@ -364,6 +364,7 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
   const [attachmentError, setAttachmentError] = useState('')
   const [recording, setRecording] = useState(null)
   const [recordSeconds, setRecordSeconds] = useState(0)
+  const [circlePreview, setCirclePreview] = useState(null)
   const fileInput = useRef(null)
   const recorderRef = useRef(null)
   const contact = contacts.find((user) => user.uid === selected)
@@ -422,7 +423,14 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
       recorderRef.current = { recorder, stream, kind, timer: null }
       recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data) }
       recorder.onerror = () => window.alert('Браузер не смог записать видео. Используйте скрепку для отправки файла.')
-      recorder.onstop = async () => { stream.getTracks().forEach((track) => track.stop()); setRecording(null); setRecordSeconds(0); await sendMediaBlob(new Blob(chunks, { type: recorder.mimeType || mimeType || (kind === 'voice' ? 'audio/webm' : 'video/webm') }), kind) }
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop()); setRecording(null); setRecordSeconds(0)
+        const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || (kind === 'voice' ? 'audio/webm' : 'video/webm') })
+        if (kind === 'circle') {
+          if (!blob.size) { window.alert('Камера не записала видео. Попробуйте еще раз.'); return }
+          setCirclePreview({ blob, url: URL.createObjectURL(blob) })
+        } else await sendMediaBlob(blob, kind)
+      }
       recorder.start(250); setRecording(kind); setRecordSeconds(0)
       recorderRef.current.timer = setInterval(() => setRecordSeconds((value) => value + 1), 1000)
       setTimeout(() => { if (recorder.state === 'recording') stopRecording() }, 6000)
@@ -458,6 +466,8 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
   const acceptCall = () => { setCall({ id: incoming.id, mode: incoming.mode, target: incoming.caller, role: 'callee' }); setIncoming(null) }
   const rejectCall = async () => { await updateDoc(doc(db, 'calls', incoming.id), { status: 'missed', endedAt: serverTimestamp() }); if (incoming.chatId && incoming.messageId) await updateDoc(doc(db, 'chats', incoming.chatId, 'messages', incoming.messageId), { systemType: 'missed' }); setIncoming(null) }
 
+  if (circlePreview) return <Modal title="Предпросмотр кружка" close={() => { URL.revokeObjectURL(circlePreview.url); setCirclePreview(null) }}><div className="circle-preview"><video src={circlePreview.url} controls autoPlay loop muted playsInline onError={() => window.alert('Браузер не может воспроизвести запись. Переснимите кружок или отправьте видео через скрепку.')} /><p>Проверьте, что видео снялось, затем отправьте.</p><div><button className="secondary" onClick={() => { URL.revokeObjectURL(circlePreview.url); setCirclePreview(null); setTimeout(() => startRecording('circle'), 0) }}>Переснять</button><button className="primary" onClick={async () => { await sendMediaBlob(circlePreview.blob, 'circle'); URL.revokeObjectURL(circlePreview.url); setCirclePreview(null) }}><Send />Отправить</button></div></div></Modal>
+
   return <><main className="messages-shell panel"><aside><div className="chat-sidebar-title"><h2>Люди</h2></div>{contacts.length === 0 && <p className="no-conversations">Пока нет других зарегистрированных пользователей.</p>}{contacts.map((user) => <button className={selected === user.uid ? 'active' : ''} onClick={() => setSelected(user.uid)} key={user.uid}><Avatar profile={user} /><span><b>{user.name}</b><small>@{user.username}</small></span></button>)}</aside>{contact ? <section className="dialog"><header><Avatar profile={contact} /><div><b>{contact.name}</b><small>аккаунт Mostor</small></div><button className="call-start" onClick={() => startCall('audio')}><Phone size={18} /></button><button className="call-start" onClick={() => startCall('video')}><Video size={19} /></button></header><div className="message-list">{messages.length === 0 && <div className="dialog-empty"><MessageCircle /><p>Напишите первое сообщение</p></div>}{messages.map((message) => <ChatMessage message={message} mine={message.senderId === currentUser.uid} key={message.id} />)}</div>{uploadProgress > 0 && <div className="chat-upload"><i><em style={{ width: `${uploadProgress}%` }} /></i><span>{uploadProgress}%</span></div>}<form onSubmit={send}><button type="button" onClick={() => fileInput.current.click()}><Paperclip /></button><input ref={fileInput} hidden type="file" onChange={(event) => attachFile(event.target.files[0])} /><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Сообщение..." /><button className="send"><Send /></button></form></section> : <section className="dialog-placeholder"><MessageCircle /><h3>Выберите пользователя</h3></section>}</main>{incoming && <div className="incoming-call"><Avatar profile={incoming.caller} size={70} /><div><span>Входящий {incoming.mode === 'video' ? 'видеозвонок' : 'звонок'}</span><h3>{incoming.caller?.name}</h3></div><button className="accept" onClick={acceptCall}><Phone /></button><button className="reject" onClick={rejectCall}><PhoneOff /></button></div>}{call && <WebRTCCall call={call} currentUser={currentUser} close={() => setCall(null)} />}</>
 }
 
@@ -465,7 +475,14 @@ function ChatMessage({ message, mine }) {
   const attachment = message.attachment
   const media = message.mediaMessage
   const callText = message.systemType === 'missed' ? 'Пропущенный звонок' : mine ? 'Исходящий звонок' : 'Входящий звонок'
-  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <audio className="voice-message" src={media.url} controls preload="metadata" />}{media?.kind === 'circle' && <video className="circle-message" src={media.url} controls playsInline preload="metadata" />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>
+  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <audio className="voice-message" src={media.url} controls preload="metadata" />}{media?.kind === 'circle' && <CircleMessage media={media} />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>
+}
+
+function CircleMessage({ media }) {
+  const video = useRef(null)
+  const [playing, setPlaying] = useState(false)
+  const toggle = async () => { if (!video.current) return; try { if (video.current.paused) await video.current.play(); else video.current.pause() } catch { window.alert('Этот формат кружка не поддерживается. Переснимите его в новой версии Mostor.') } }
+  return <button className={`circle-player ${playing ? 'playing' : ''}`} onClick={toggle}><video ref={video} src={media.url} playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} /><span>{playing ? <Pause /> : <Play fill="currentColor" />}</span></button>
 }
 
 function CallsPage({ calls, users, currentUser, profile }) {
