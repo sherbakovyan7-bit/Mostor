@@ -404,9 +404,12 @@ function NetworkMessagesPage({ data, users, currentUser, initialFriend }) {
     if (!blob.size) { window.alert('Запись пустая. Попробуйте еще раз.'); return }
     if (blob.size > 580 * 1024) { window.alert('Запись получилась слишком большой. Запишите короче.'); return }
     try {
-      const fileUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(blob) })
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      let binary = ''
+      for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
+      const base64 = btoa(binary)
       await setDoc(doc(db, 'chats', chatId), { members: [currentUser.uid, contact.uid], updatedAt: serverTimestamp(), lastMessage: kind === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение' }, { merge: true })
-      await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, mediaMessage: { kind, type: blob.type, url: fileUrl, size: blob.size }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
+      await addDoc(collection(db, 'chats', chatId, 'messages'), { text: '', senderId: currentUser.uid, author: data.profile.name, mediaMessage: { kind, type: blob.type, base64, size: blob.size }, createdAt: serverTimestamp(), readBy: [currentUser.uid] })
     } catch (error) { window.alert(error.code === 'permission-denied' ? 'Обновите Firestore Rules для отправки медиа.' : `Не удалось отправить запись: ${error.message}`) }
   }
   const stopRecording = () => { const active = recorderRef.current; if (!active) return; clearInterval(active.timer); if (active.recorder.state === 'recording') active.recorder.stop(); recorderRef.current = null }
@@ -475,7 +478,23 @@ function ChatMessage({ message, mine }) {
   const attachment = message.attachment
   const media = message.mediaMessage
   const callText = message.systemType === 'missed' ? 'Пропущенный звонок' : mine ? 'Исходящий звонок' : 'Входящий звонок'
-  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <audio className="voice-message" src={media.url} controls preload="metadata" />}{media?.kind === 'circle' && <CircleMessage media={media} />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>
+  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <MediaAudio media={media} />}{media?.kind === 'circle' && <CircleMessage media={media} />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</small></div>
+}
+
+function mediaToBlob(media) {
+  if (media.base64) {
+    const binary = atob(media.base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+    return new Blob([bytes], { type: media.type || 'application/octet-stream' })
+  }
+  return fetch(media.url).then((response) => response.blob())
+}
+
+function MediaAudio({ media }) {
+  const [source, setSource] = useState('')
+  useEffect(() => { let url = ''; mediaToBlob(media).then((blob) => { url = URL.createObjectURL(blob); setSource(url) }); return () => { if (url) URL.revokeObjectURL(url) } }, [media.base64, media.url])
+  return source ? <audio className="voice-message" src={source} controls preload="metadata" /> : <span>Загрузка голосового...</span>
 }
 
 function CircleMessage({ media }) {
@@ -487,18 +506,16 @@ function CircleMessage({ media }) {
     let objectUrl = ''
     const prepare = async () => {
       try {
-        if (media.url?.startsWith('data:')) {
-          const blob = await fetch(media.url).then((response) => response.blob())
-          objectUrl = URL.createObjectURL(blob)
-          setSource(objectUrl)
-        } else setSource(media.url)
+        const blob = await mediaToBlob(media)
+        objectUrl = URL.createObjectURL(blob)
+        setSource(objectUrl)
       } catch (reason) { setError(`Не удалось подготовить видео: ${reason.message}`) }
     }
     prepare()
     return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [media.url])
+  }, [media.base64, media.url])
   const toggle = async () => { if (!video.current || !source) return; try { if (video.current.paused) await video.current.play(); else video.current.pause() } catch (reason) { setError(`Ошибка воспроизведения: ${reason.message}`) } }
-  return <button className={`circle-player ${playing ? 'playing' : ''} ${error ? 'failed' : ''}`} onClick={toggle}>{source && <video ref={video} src={source} playsInline preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onError={() => setError('Браузер не смог декодировать видеозапись.')} />}<span>{error ? <X /> : playing ? <Pause /> : <Play fill="currentColor" />}</span>{error && <small>{error}</small>}</button>
+  return <button className={`circle-player ${playing ? 'playing' : ''} ${error ? 'failed' : ''}`} onClick={toggle}>{source && <video ref={video} src={source} playsInline preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onError={() => setError(`Не декодирован ${media.type || 'неизвестный формат'}, ${formatBytes(media.size)}`)} />}<span>{error ? <X /> : playing ? <Pause /> : <Play fill="currentColor" />}</span>{error && <small>{error}</small>}</button>
 }
 
 function CallsPage({ calls, users, currentUser, profile }) {
