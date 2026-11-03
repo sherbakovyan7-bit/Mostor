@@ -459,7 +459,7 @@ function ProfilePage({ data, update, currentUser }) {
 function Preference({ label, text, active, toggle }) { return <button className="preference" onClick={toggle}><span><b>{label}</b><small>{text}</small></span><i className={active ? 'active' : ''}><em /></i></button> }
 
 function LabsPage({ data, update }) {
-  const [query, setQuery] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
   const [group, setGroup] = useState('Все')
   const flags = data.labFlags || {}
   const filtered = labFeatures.filter((feature) => (group === 'Все' || feature.group === group) && feature.name.toLowerCase().includes(query.toLowerCase()))
@@ -584,7 +584,7 @@ export default function App() {
   return <div className="app-shell">
     <div className={`mobile-drawer ${menu ? 'open' : ''}`} onClick={(e) => e.target === e.currentTarget && setMenu(false)}><Sidebar active={active} setActive={navigate} profile={data.profile} /></div>
     <Sidebar active={active} setActive={navigate} profile={data.profile} />
-    <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={query} setQuery={setQuery} openMenu={() => setMenu(true)} profile={data.profile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />
+    <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={searchQuery} setQuery={setSearchQuery} openMenu={() => setMenu(true)} profile={data.profile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />
       {active === 'feed' && <FeedPage data={data} update={update} posts={sharedPosts} currentUid={currentUser.uid} deletePost={deleteSharedPost} openComposer={() => setComposer(true)} />}
       {active === 'channels' && <ChannelsPage data={data} update={update} />}
       {active === 'video' && <VideosPage data={data} update={update} selectedVideo={selectedVideo} setSelectedVideo={setSelectedVideo} currentUser={currentUser} remoteVideos={remoteVideos} />}
