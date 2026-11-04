@@ -9,6 +9,7 @@ import {
   Video, VideoOff, X, Zap,
 } from 'lucide-react'
 import { auth, db } from './firebase'
+import { isOnline, presenceLabel } from './presence.mjs'
 
 const initialData = {
   profile: { name: 'Ян', username: 'yan', bio: 'Основатель Mostor', avatar: '', statusMode: 'online', statusText: '' },
@@ -147,15 +148,17 @@ function Avatar({ profile, size = 44 }) {
     ? <img className="avatar" style={{ width: size, height: size }} src={profile.avatar} alt="" />
     : <span className="avatar avatar-letter" style={{ width: size, height: size, fontSize: size * .38 }}>{letter}</span>
   if (!profile?.uid) return content
-  return <button className="avatar-button" onClick={() => window.dispatchEvent(new CustomEvent('mostor:profile', { detail: profile }))}>{content}</button>
+  return <button className="avatar-button" onClick={() => window.dispatchEvent(new CustomEvent('mostor:profile', { detail: profile }))} title={`${profile.name}: ${presenceLabel(profile)}`}>{content}<i className={`avatar-presence ${isOnline(profile) ? 'online' : 'offline'}`} /></button>
 }
 
 const statusLabels = { online: 'В сети', busy: 'Занят', dnd: 'Не беспокоить', invisible: 'Невидимый' }
 
 function StatusBadge({ profile, compact = false }) {
-  const mode = profile?.statusMode || 'online'
-  if (mode === 'invisible' && compact) return <span className="user-status offline">Не в сети</span>
-  return <span className={`user-status ${mode}`}><i />{profile?.statusText || statusLabels[mode]}</span>
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 10_000); return () => clearInterval(timer) }, [])
+  const online = isOnline(profile, now)
+  const mode = online ? (profile?.statusMode || 'online') : 'offline'
+  return <span className={`user-status ${mode}`}><i />{online && !compact && profile?.statusText ? profile.statusText : presenceLabel(profile, now)}</span>
 }
 
 function Sidebar({ active, setActive, profile }) {
@@ -198,7 +201,7 @@ function StatusPage({ data, update, currentUser }) {
     update({ profile })
     await setDoc(doc(db, 'users', currentUser.uid), profile, { merge: true })
   }
-  return <main className="content-page status-page"><div className="page-heading"><div><span className="eyebrow">НАСТРОЕНИЕ</span><h2>Ваш статус</h2><p>Покажите людям, чем вы заняты прямо сейчас.</p></div></div><section className="status-editor panel"><div className="status-preview"><Avatar profile={data.profile} size={72} /><div><h3>{data.profile.name}</h3><StatusBadge profile={{ ...data.profile, statusMode, statusText }} /></div></div><div className="status-modes">{Object.entries(statusLabels).map(([id, label]) => <button className={statusMode === id ? `active ${id}` : id} onClick={() => setStatusMode(id)} key={id}><i />{label}</button>)}</div><label className="field">Текст статуса<input maxLength="80" value={statusText} onChange={(event) => setStatusText(event.target.value)} placeholder="Например: Работаю над новым проектом" /><small>{statusText.length} / 80</small></label><div className="status-actions"><button className="secondary" onClick={() => setStatusText('')}>Очистить текст</button><button className="primary" onClick={save}><Save />Сохранить статус</button></div></section></main>
+  return <main className="content-page status-page"><div className="page-heading"><div><span className="eyebrow">НАСТРОЕНИЕ</span><h2>Ваш статус</h2><p>Покажите людям, чем вы заняты прямо сейчас.</p></div></div><section className="status-editor panel"><div className="status-preview"><Avatar profile={data.profile} size={72} /><div><h3>{data.profile.name}</h3><StatusBadge profile={{ ...data.profile, statusMode, statusText, presence: navigator.onLine && !document.hidden, lastSeen: Date.now() }} /></div></div><div className="status-modes">{Object.entries(statusLabels).map(([id, label]) => <button className={statusMode === id ? `active ${id}` : id} onClick={() => setStatusMode(id)} key={id}><i />{label}</button>)}</div><label className="field">Текст статуса<input maxLength="80" value={statusText} onChange={(event) => setStatusText(event.target.value)} placeholder="Например: Работаю над новым проектом" /><small>{statusText.length} / 80</small></label><div className="status-actions"><button className="secondary" onClick={() => setStatusText('')}>Очистить текст</button><button className="primary" onClick={save}><Save />Сохранить статус</button></div></section></main>
 }
 
 function MusicPage({ tracks, setTracks, data, currentUser }) {
@@ -998,12 +1001,49 @@ export default function App() {
   }, [])
   const navigate = (page) => { setActive(page); setMenu(false); window.scrollTo(0, 0) }
   useEffect(() => onAuthStateChanged(auth, async (user) => {
-    setCurrentUser(user || null)
-    if (!user) return
-    const snapshot = await getDoc(doc(db, 'users', user.uid))
-    if (snapshot.exists()) update({ profile: { ...initialData.profile, ...snapshot.data(), uid: user.uid } })
-    else { const profile = { uid: user.uid, name: user.displayName || 'Пользователь', username: '', phone: '', email: user.email, avatar: user.photoURL || '', bio: 'Новый пользователь Mostor', statusMode: 'online', statusText: '' }; await setDoc(doc(db, 'users', user.uid), profile); update({ profile }) }
+    if (!user) { setCurrentUser(null); return }
+    try {
+      const snapshot = await getDoc(doc(db, 'users', user.uid))
+      if (auth.currentUser?.uid !== user.uid) return
+      if (snapshot.exists()) update({ profile: { ...initialData.profile, ...snapshot.data(), uid: user.uid } })
+      else {
+        const profile = { uid: user.uid, name: user.displayName || 'Пользователь', username: '', phone: '', email: user.email, avatar: user.photoURL || '', bio: 'Новый пользователь Mostor', statusMode: 'online', statusText: '' }
+        await setDoc(doc(db, 'users', user.uid), profile)
+        update({ profile })
+      }
+    } catch (error) {
+      console.error('Не удалось загрузить профиль:', error)
+    }
+    if (auth.currentUser?.uid === user.uid) setCurrentUser(user)
   }), [])
+  useEffect(() => {
+    if (!currentUser) return
+    return onSnapshot(doc(db, 'users', currentUser.uid), (snapshot) => {
+      if (snapshot.exists()) update({ profile: { ...initialData.profile, ...snapshot.data(), uid: currentUser.uid } })
+    }, (error) => { if (error.code !== 'permission-denied') console.error(error) })
+  }, [currentUser?.uid])
+  useEffect(() => {
+    if (!currentUser) return
+    const userRef = doc(db, 'users', currentUser.uid)
+    const heartbeat = () => {
+      const visible = !document.hidden && navigator.onLine
+      updateDoc(userRef, { presence: visible, lastSeen: serverTimestamp() }).catch((error) => { if (error.code !== 'not-found' && error.code !== 'unavailable') console.error(error) })
+    }
+    heartbeat()
+    const timer = setInterval(heartbeat, 15_000)
+    document.addEventListener('visibilitychange', heartbeat)
+    window.addEventListener('online', heartbeat)
+    window.addEventListener('offline', heartbeat)
+    const leave = () => { updateDoc(userRef, { presence: false, lastSeen: serverTimestamp() }).catch(() => {}) }
+    window.addEventListener('pagehide', leave)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', heartbeat)
+      window.removeEventListener('online', heartbeat)
+      window.removeEventListener('offline', heartbeat)
+      window.removeEventListener('pagehide', leave)
+    }
+  }, [currentUser?.uid])
   useEffect(() => {
     if (!currentUser) { setSharedPosts([]); return }
     return onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc')), (snapshot) => { const server = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), createdAt: item.data().createdAt?.toMillis?.() || Date.now() })); setSharedPosts((current) => { const ids = new Set(server.map((item) => item.id)); return [...current.filter((item) => item.pending && !ids.has(item.id)), ...server] }) }, (error) => { if (error.code !== 'permission-denied') console.error(error) })
@@ -1038,11 +1078,14 @@ export default function App() {
   const titles = Object.fromEntries(navItems.map(([id, title]) => [id, title]))
   if (currentUser === undefined) return <div className="app-loading"><span>M</span><p>Загрузка Mostor...</p></div>
   if (!currentUser) return <AuthScreen />
+  const ownProfile = networkUsers.find((user) => user.uid === currentUser.uid)
+  const visibleProfile = { ...data.profile, presence: ownProfile?.presence, lastSeen: ownProfile?.lastSeen }
+  const freshViewedProfile = viewedProfile?.uid === currentUser.uid ? visibleProfile : networkUsers.find((user) => user.uid === viewedProfile?.uid) || viewedProfile
   const themeStyle = { '--acid': data.settings.accent, '--bg': data.settings.themeMode === 'light' ? '#f3f5ef' : data.settings.background, '--panel': data.settings.themeMode === 'light' ? '#ffffff' : '#141714', '--panel2': data.settings.themeMode === 'light' ? '#e8ece5' : '#1b1f1b', '--line': data.settings.themeMode === 'light' ? '#ced5ca' : '#293029', '--muted': data.settings.themeMode === 'light' ? '#687268' : '#8d968d', '--white': data.settings.themeMode === 'light' ? '#151815' : '#f2f4ed', fontSize: `${data.settings.scale / 100}rem` }
   return <div className={`app-shell theme-${data.settings.themeMode}`} style={themeStyle}>
-    <div className={`mobile-drawer ${menu ? 'open' : ''}`} onClick={(e) => e.target === e.currentTarget && setMenu(false)}><Sidebar active={active} setActive={navigate} profile={data.profile} /></div>
-    <Sidebar active={active} setActive={navigate} profile={data.profile} />
-    <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={searchQuery} setQuery={setSearchQuery} openMenu={() => setMenu(true)} profile={data.profile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />
+    <div className={`mobile-drawer ${menu ? 'open' : ''}`} onClick={(e) => e.target === e.currentTarget && setMenu(false)}><Sidebar active={active} setActive={navigate} profile={visibleProfile} /></div>
+    <Sidebar active={active} setActive={navigate} profile={visibleProfile} />
+    <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={searchQuery} setQuery={setSearchQuery} openMenu={() => setMenu(true)} profile={visibleProfile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />
       {active === 'feed' && <><div className="stories-wrap"><StoriesSection stories={stories} profile={data.profile} createStory={createStory} /></div><FeedPage data={data} update={update} posts={sharedPosts} currentUid={currentUser.uid} deletePost={deleteSharedPost} openComposer={() => setComposer(true)} /></>}
       {active === 'channels' && <ChannelsPage data={data} update={update} />}
       {active === 'video' && <FreeStorageNotice type="video" />}
@@ -1062,6 +1105,6 @@ export default function App() {
     <nav className="mobile-nav">{navItems.slice(0, 5).map(([id,,Icon]) => <button className={active === id ? 'active' : ''} onClick={() => navigate(id)} key={id}><Icon /></button>)}</nav>
     {composer && <PostComposer profile={data.profile} channels={data.channels} close={() => setComposer(false)} onCreate={createPost} />}
     {notificationOpen && <Modal title="Уведомления" close={() => setNotificationOpen(false)}>{data.notifications.length === 0 ? <div className="notification-empty"><Bell /><p>Новых уведомлений нет.</p></div> : <div className="notification-list">{data.notifications.map((item) => <article key={item.id}><Bell /><div><b>{item.title}</b><small>{item.text}</small></div></article>)}</div>}</Modal>}
-    {viewedProfile && <ProfileViewer person={viewedProfile} own={viewedProfile.uid === currentUser.uid} data={data} update={update} close={() => setViewedProfile(null)} openChat={(id) => { setViewedProfile(null); setChatFriend(id); navigate('messages') }} />}
+    {viewedProfile && <ProfileViewer person={freshViewedProfile} own={viewedProfile.uid === currentUser.uid} data={data} update={update} close={() => setViewedProfile(null)} openChat={(id) => { setViewedProfile(null); setChatFriend(id); navigate('messages') }} />}
   </div>
 }
