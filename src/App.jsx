@@ -531,8 +531,6 @@ function NetworkMessagesPage({ data, update, users, currentUser, initialFriend, 
     circle.classList.toggle('recording', recording === 'circle')
     voice.onclick = () => recording === 'voice' ? stopRecording() : startRecording('voice')
     circle.onclick = () => recording === 'circle' ? stopRecording() : startRecording('circle')
-    document.querySelectorAll('.chat-sticker').forEach((element) => { const pack = stickerPacks.find((item) => item.stickers?.some((stickerItem) => (stickerItem.data || stickerItem.image) === element.src)); if (pack) { element.onclick = () => openStickerPack(pack.id); element.title = 'Открыть стикерпак'; element.dataset.packId = pack.id } })
-    document.querySelectorAll('.chat-sticker').forEach((element) => { const stickerItem = stickerPacks.flatMap((pack) => pack.stickers || []).find((item) => item.id === element.alt || (item.data || item.image) === element.src); if (stickerItem?.type === 'video' && element.tagName === 'IMG') { const video = document.createElement('video'); video.className = `${element.className} ${stickerItem.shape || 'square'}`; video.src = stickerItem.data; video.autoplay = true; video.loop = true; video.muted = true; video.playsInline = true; video.dataset.packId = element.dataset.packId || ''; video.onclick = element.onclick; element.replaceWith(video) } })
   }, [chatId, recording, recordSeconds, circlePreview, stickersOpen, messages.length])
   const startCall = async (mode) => {
     if (!contact) return
@@ -550,6 +548,7 @@ function NetworkMessagesPage({ data, update, users, currentUser, initialFriend, 
     await setDoc(messageRef, { text: '', senderId: currentUser.uid, author: data.profile.name, sticker: payload, createdAt: serverTimestamp(), readBy: [currentUser.uid], repliedBy: [] })
   }
   const openStickerPack = (packId) => { const pack = stickerPacks.find((item) => item.id === packId); if (pack) setViewedStickerPack(pack) }
+  useEffect(() => { const open = (event) => openStickerPack(event.detail); window.addEventListener('mostor:sticker-pack', open); return () => window.removeEventListener('mostor:sticker-pack', open) }, [stickerPacks])
   const addStickerPack = async (packId) => { const current = data.profile.stickerPacks || []; if (current.includes(packId)) return; const next = [...current, packId]; update({ profile: { ...data.profile, stickerPacks: next } }); await setDoc(doc(db, 'users', currentUser.uid), { stickerPacks: next }, { merge: true }); setViewedStickerPack(null) }
   const acceptCall = () => { setCall({ id: incoming.id, mode: incoming.mode, target: incoming.caller, role: 'callee' }); setIncoming(null) }
   const rejectCall = async () => { await updateDoc(doc(db, 'calls', incoming.id), { status: 'missed', endedAt: serverTimestamp() }); if (incoming.chatId && incoming.messageId) await updateDoc(doc(db, 'chats', incoming.chatId, 'messages', incoming.messageId), { systemType: 'missed' }); setIncoming(null) }
@@ -566,7 +565,7 @@ function ChatMessage({ message, mine }) {
   const media = message.mediaMessage
   const callText = message.systemType === 'missed' ? 'Пропущенный звонок' : mine ? 'Исходящий звонок' : 'Входящий звонок'
   const delivery = mine ? (message.repliedBy?.length ? '✓✓✓' : message.readBy?.length > 1 ? '✓✓' : '✓') : ''
-  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{message.sticker && <StickerAsset sticker={message.sticker} className={`chat-sticker ${message.sticker.shape || 'square'}`} />}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <MediaAudio media={media} />}{media?.kind === 'circle' && <CircleMessage media={media} />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}{delivery && <b className="delivery-checks">{delivery}</b>}</small></div>
+  return <div className={mine ? 'message mine' : 'message'}>{message.systemType && <b className="system-message-icon">{message.systemType === 'missed' ? <PhoneOff /> : <Phone />}{callText}{message.mode === 'video' && ' · видео'}</b>}{!message.systemType && message.text}{message.sticker && <button className="chat-sticker-button" type="button" onClick={() => window.dispatchEvent(new CustomEvent('mostor:sticker-pack', { detail: message.sticker.packId }))}><StickerAsset sticker={message.sticker} className={`chat-sticker ${message.sticker.shape || 'square'}`} /><span>Открыть стикерпак</span></button>}{attachment && (attachment.type?.startsWith('image/') ? <a className="chat-image" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /><span>{attachment.name}</span></a> : attachment.type?.startsWith('video/') ? <video className="chat-video" src={attachment.url} controls playsInline /> : <a className="chat-file" href={attachment.url} target="_blank" rel="noreferrer"><FolderOpen /><span><b>{attachment.name}</b><small>{formatBytes(attachment.size)}</small></span><Download /></a>)}{media?.kind === 'voice' && <MediaAudio media={media} />}{media?.kind === 'circle' && <CircleMessage media={media} />}<small>{new Date(message.time).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}{delivery && <b className="delivery-checks">{delivery}</b>}</small></div>
 }
 
 async function mediaToBlob(media) {
@@ -791,10 +790,27 @@ function ProfileViewer({ person, own, data, update, close, openChat }) {
 }
 
 function StickerAsset({ sticker, className = '', autoPlay = true }) {
-  const source = sticker.data || sticker.image
-  return sticker.type === 'video'
-    ? <video className={className} src={source} muted loop playsInline autoPlay={autoPlay} preload="metadata" />
-    : <img className={className} src={source} alt={sticker.name || 'Стикер'} />
+  const [source, setSource] = useState('')
+  const [playbackError, setPlaybackError] = useState(false)
+  const raw = sticker.data || sticker.image || ''
+  const video = sticker.type === 'video' || raw.startsWith('data:video/')
+  useEffect(() => {
+    setPlaybackError(false)
+    if (!video || !raw.startsWith('data:')) { setSource(raw); return }
+    let objectUrl = ''
+    let cancelled = false
+    mediaToBlob({ url: raw }).then((blob) => {
+      if (cancelled) return
+      objectUrl = URL.createObjectURL(blob)
+      setSource(objectUrl)
+    }).catch(() => { if (!cancelled) setPlaybackError(true) })
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [raw, video])
+  if (video) {
+    if (playbackError) return sticker.image ? <img className={className} src={sticker.image} alt={sticker.name || 'Стикер'} /> : <span className={`${className} sticker-loading`}>Видео не воспроизводится</span>
+    return source ? <video className={className} src={source} poster={sticker.image || undefined} muted loop playsInline autoPlay={autoPlay} preload="metadata" onError={() => setPlaybackError(true)} /> : <span className={`${className} sticker-loading`}>Загрузка стикера...</span>
+  }
+  return raw ? <img className={className} src={raw} alt={sticker.name || 'Стикер'} /> : <span className={`${className} sticker-loading`}>Стикер недоступен</span>
 }
 
 function StickerWorkshop({ file, close, save }) {
@@ -818,6 +834,12 @@ function StickerWorkshop({ file, close, save }) {
     if (text.trim()) { context.font = `700 ${Math.round(width / 11)}px Manrope`; context.textAlign = 'center'; context.textBaseline = 'bottom'; context.lineWidth = 6; context.strokeStyle = '#000000aa'; context.strokeText(text.trim(), width / 2, height - 15); context.fillStyle = textColor; context.fillText(text.trim(), width / 2, height - 15) }
   }
   const exportImage = async () => {
+    if (file.type === 'image/gif') {
+      if (file.size > 350 * 1024) throw new Error('GIF больше 350 КБ. Выберите более короткий GIF или видео для обрезки в мастерской.')
+      if (text.trim()) throw new Error('Наложение текста на GIF пока не поддерживается: Canvas сохраняет только первый кадр. Уберите текст, чтобы сохранить анимацию.')
+      const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file) })
+      return { id: crypto.randomUUID(), type: 'image', shape, data, name: file.name }
+    }
     const image = new window.Image(); image.src = source; await image.decode()
     const [width, height] = dimensions; const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height; const context = canvas.getContext('2d')
     const scale = Math.max(width / image.width, height / image.height); const sourceWidth = width / scale; const sourceHeight = height / scale
@@ -833,9 +855,11 @@ function StickerWorkshop({ file, close, save }) {
     const done = new Promise((resolve) => { recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType })) })
     video.currentTime = start; video.muted = true; await video.play(); recorder.start(250)
     await new Promise((resolve) => { const render = () => { drawFrame(context, video, width, height); if (video.currentTime >= end || video.ended) { video.pause(); recorder.stop(); resolve(); return } requestAnimationFrame(render) }; render() })
-    const blob = await done; if (blob.size > 430 * 1024) throw new Error('Видео получилось слишком большим. Укоротите отрезок.')
+    const blob = await done; if (!blob.size) throw new Error('Видео не записалось. Попробуйте другой файл.')
+    if (blob.size > 430 * 1024) throw new Error('Видео получилось слишком большим. Укоротите отрезок.')
     const data = await new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(blob) })
-    return { id: crypto.randomUUID(), type: 'video', shape, data, name: file.name, duration: end - start }
+    const image = canvas.toDataURL('image/jpeg', .45)
+    return { id: crypto.randomUUID(), type: 'video', shape, data, image, name: file.name, duration: end - start }
   }
   const finish = async () => { setBusy(true); try { save(isVideo ? await exportVideo() : await exportImage()) } catch (error) { window.alert(error.message) } finally { setBusy(false) } }
   return <Modal title="Мастерская стикеров" close={close} wide><div className="sticker-workshop"><div className={`sticker-stage ${shape}`}>{isVideo ? <video ref={videoRef} src={source} muted loop playsInline controls onLoadedMetadata={(event) => { const value = Math.min(event.currentTarget.duration || 5, 5); setDuration(event.currentTarget.duration || 5); setEnd(value) }} /> : <img src={source} alt="" />} {text && <strong style={{ color: textColor }}>{text}</strong>}</div><div className="workshop-controls"><h3>Формат</h3><div className="mode-picker"><button className={shape === 'square' ? 'active' : ''} onClick={() => setShape('square')}>Короткий</button><button className={shape === 'long' ? 'active' : ''} onClick={() => setShape('long')}>Длинный</button></div>{isVideo && <><h3>Обрезать видео</h3><label className="trim-control"><span>Начало: {start.toFixed(1)} сек</span><input type="range" min="0" max={Math.max(0, duration - .5)} step=".1" value={start} onChange={(event) => { const value = Number(event.target.value); setStart(value); if (end <= value) setEnd(Math.min(duration, value + .5)) }} /></label><label className="trim-control"><span>Конец: {end.toFixed(1)} сек</span><input type="range" min={start + .3} max={Math.min(duration, start + 5)} step=".1" value={end} onChange={(event) => setEnd(Number(event.target.value))} /></label><small>Максимальная длина: 5 секунд. Видео-стикер будет без звука.</small></>}<label className="field">Текст<input maxLength="28" value={text} onChange={(event) => setText(event.target.value)} placeholder="Добавить надпись" /></label><label className="workshop-color">Цвет текста<input type="color" value={textColor} onChange={(event) => setTextColor(event.target.value)} /></label><button className="primary full" disabled={busy} onClick={finish}>{busy ? 'Обработка...' : 'Добавить стикер в пак'}</button></div></div></Modal>
@@ -847,7 +871,13 @@ function StickersPage({ packs, data, update, currentUser }) {
   const [stickers, setStickers] = useState([])
   const [editingFile, setEditingFile] = useState(null)
   const owned = data.profile.stickerPacks || []
-  const createPack = async () => { if (!name.trim() || !stickers.length) return; await addDoc(collection(db, 'stickerPacks'), { name: name.trim(), stickers, uid: currentUser.uid, author: data.profile, createdAt: serverTimestamp() }); setName(''); setStickers([]); setOpen(false) }
+  const createPack = async () => {
+    if (!name.trim() || !stickers.length) return
+    const pack = { name: name.trim(), stickers, uid: currentUser.uid, author: { uid: currentUser.uid, name: data.profile.name, username: data.profile.username || '' }, createdAt: serverTimestamp() }
+    if (new Blob([JSON.stringify({ ...pack, createdAt: null })]).size > 850000) { window.alert('Стикерпак превышает лимит Firestore. Уменьшите число или размер GIF/видео-стикеров.'); return }
+    try { await addDoc(collection(db, 'stickerPacks'), pack); setName(''); setStickers([]); setOpen(false) }
+    catch (error) { window.alert(`Не удалось создать стикерпак: ${error.message}`) }
+  }
   const togglePack = async (packId) => { const next = owned.includes(packId) ? owned.filter((id) => id !== packId) : [...owned, packId]; const profile = { ...data.profile, stickerPacks: next }; update({ profile }); await setDoc(doc(db, 'users', currentUser.uid), { stickerPacks: next }, { merge: true }) }
   return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR STICKERS</span><h2>Стикеры</h2><p>Создавайте изображения и видео-стикеры в собственной мастерской.</p></div><button className="primary" onClick={() => setOpen(true)}><Plus />Создать стикерпак</button></div>{packs.length === 0 ? <Empty icon={Smile} title="Стикерпаков пока нет" text="Создайте первый пак из изображений или коротких видео." action={() => setOpen(true)} actionText="Создать пак" /> : <div className="sticker-pack-grid">{packs.map((pack) => <article className="sticker-pack panel" key={pack.id}><header><div><h3>{pack.name}</h3><small>Автор: {pack.author?.name}</small></div><button className={owned.includes(pack.id) ? 'added' : ''} onClick={() => togglePack(pack.id)}>{owned.includes(pack.id) ? <><Check />Добавлен</> : <><Plus />Добавить</>}</button></header><div>{pack.stickers.map((sticker) => <StickerAsset sticker={sticker} key={sticker.id} />)}</div>{pack.uid === currentUser.uid && <button className="delete-pack" onClick={() => deleteDoc(doc(db, 'stickerPacks', pack.id))}><Trash2 />Удалить пак</button>}</article>)}</div>}{open && <Modal title="Новый стикерпак" close={() => setOpen(false)} wide><label className="field">Название<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Название пака" /></label><label className="sticker-upload"><Film /><span>Открыть мастерскую: фото или видео</span><input hidden type="file" accept="image/*,video/*" onChange={(event) => setEditingFile(event.target.files[0])} /></label>{stickers.length > 0 && <div className="sticker-preview-grid">{stickers.map((sticker) => <div className={sticker.shape} key={sticker.id}><StickerAsset sticker={sticker} /><button onClick={() => setStickers((items) => items.filter((item) => item.id !== sticker.id))}><X /></button></div>)}</div>}<small className="story-limit">До 6 стикеров. Видео до 5 секунд и 430 КБ.</small><button className="primary full" disabled={!name.trim() || !stickers.length} onClick={createPack}>Опубликовать стикерпак</button></Modal>}{editingFile && <StickerWorkshop file={editingFile} close={() => setEditingFile(null)} save={(sticker) => { if (stickers.length >= 6) window.alert('В паке может быть не больше 6 стикеров.'); else setStickers((items) => [...items, sticker]); setEditingFile(null) }} />}</main>
 }
