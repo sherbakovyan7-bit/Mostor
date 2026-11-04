@@ -33,16 +33,13 @@ jobs:
       - name: Build website
         run: npm run build
 
-      - name: Prepare maintenance page
-        run: cp 'Техперерыв.png' maintenance/
-
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
       - name: Upload website
         uses: actions/upload-pages-artifact@v3
         with:
-          path: maintenance
+          path: dist
 
   deploy:
     environment:
