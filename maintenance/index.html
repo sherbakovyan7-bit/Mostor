@@ -36,17 +36,12 @@
       <section class="panel">
         <div class="logo">Mostor.</div>
         <h1>Технический перерыв</h1>
-        <p>Пока мы чиним звонки, можно сыграть в «Импульс» или посмотреть своё видео прямо здесь.</p>
+        <p>Пока мы чиним звонки, выбери игру из 100 уровней или посмотри своё видео прямо здесь.</p>
         <div class="choices">
           <button id="game-tab" class="active" type="button">Играть</button>
           <button id="video-tab" type="button">Смотреть видео</button>
         </div>
-        <section id="game" class="activity">
-          <h2>Импульс</h2>
-          <p>Набери максимум очков за десять секунд.</p>
-          <div class="score"><span>Очки: <b id="points">0</b></span><span>Время: <b id="seconds">10</b></span></div>
-          <button id="play" class="play" type="button">Старт</button>
-        </section>
+        <section id="game" class="activity"><div id="game-hub"></div></section>
         <section id="videos" class="activity" hidden>
           <h2>Локальный плеер</h2>
           <p>Выбери видео со своего устройства. Файл никуда не загружается.</p>
@@ -70,30 +65,6 @@
       gameTab.addEventListener('click', () => show('game'))
       videoTab.addEventListener('click', () => show('videos'))
 
-      const play = document.getElementById('play')
-      const points = document.getElementById('points')
-      const seconds = document.getElementById('seconds')
-      let running = false
-      let timeLeft = 10
-      let score = 0
-      let timer
-      play.addEventListener('click', () => {
-        if (!running) {
-          clearInterval(timer)
-          running = true
-          score = 0
-          timeLeft = 10
-          play.textContent = 'Нажимай!'
-          points.textContent = score
-          seconds.textContent = timeLeft
-          timer = setInterval(() => {
-            timeLeft -= 1
-            seconds.textContent = timeLeft
-            if (timeLeft === 0) { clearInterval(timer); running = false; play.textContent = 'Ещё раз' }
-          }, 1000)
-        } else { score += 1; points.textContent = score; play.textContent = '+1' }
-      })
-
       const fileInput = document.getElementById('video-file')
       const player = document.getElementById('player')
       let fileUrl
@@ -107,6 +78,10 @@
         player.play().catch(() => {})
       })
       window.addEventListener('pagehide', () => { if (fileUrl) URL.revokeObjectURL(fileUrl) })
+    </script>
+    <script type="module">
+      import { mountGamesHub } from './games-hub.mjs'
+      mountGamesHub(document.getElementById('game-hub'))
     </script>
   </body>
 </html>

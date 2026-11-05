@@ -38,7 +38,9 @@ jobs:
         run: npm run build
 
       - name: Prepare maintenance page
-        run: cp 'Техперерыв.png' maintenance/
+        run: |
+          cp 'Техперерыв.png' maintenance/
+          cp src/games-hub.mjs maintenance/games-hub.mjs
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

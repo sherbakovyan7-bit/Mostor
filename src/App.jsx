@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { auth, db } from './firebase'
 import { getIceServers, hasTurnServer } from './callConfig'
+import { mountGamesHub } from './games-hub.mjs'
 import { isOnline, presenceLabel } from './presence.mjs'
 
 const initialData = {
@@ -1024,11 +1025,13 @@ const quests = [
 
 function GamesPage({ data, update }) {
   const [game, setGame] = useState('reaction')
+  const hubRef = useRef(null)
+  useEffect(() => { if (game === 'arcade' && hubRef.current) return mountGamesHub(hubRef.current) }, [game])
   const stats = data.gameStats || initialData.gameStats
   const claims = data.questClaims || []
   const setStats = (patch) => update({ gameStats: { ...stats, ...patch } })
   const claim = (quest) => { if (claims.includes(quest.id) || quest.progress(stats) < quest.goal) return; update({ coins: data.coins + quest.reward, questClaims: [...claims, quest.id] }) }
-  return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR PLAY</span><h2>Игры</h2><p>Играйте, выполняйте задания и зарабатывайте монеты.</p></div><CoinBalance value={data.coins} /></div><section className="quests-panel panel"><div className="quests-title"><Trophy /><div><h3>Задания</h3><p>Награды можно получить один раз.</p></div></div><div className="quest-list">{quests.map((quest) => { const progress = quest.progress(stats); const claimed = claims.includes(quest.id); return <article key={quest.id}><div><b>{quest.title}</b><small>{quest.text}</small><i><em style={{ width: `${progress / quest.goal * 100}%` }} /></i><span>{progress} / {quest.goal}</span></div><button disabled={progress < quest.goal || claimed} onClick={() => claim(quest)}>{claimed ? <><Check />Получено</> : <>● {quest.reward}</>}</button></article> })}</div></section><div className="game-tabs"><button className={game === 'reaction' ? 'active' : ''} onClick={() => setGame('reaction')}><Zap />Импульс</button><button className={game === 'tictac' ? 'active' : ''} onClick={() => setGame('tictac')}># Крестики-нолики</button><button className={game === 'memory' ? 'active' : ''} onClick={() => setGame('memory')}><Gamepad2 />Пары</button></div>{game === 'reaction' && <ReactionGame onFinish={(score) => setStats({ reactionBest: Math.max(stats.reactionBest, score) })} />}{game === 'tictac' && <TicTacToe onFinish={() => setStats({ tictacGames: stats.tictacGames + 1 })} />}{game === 'memory' && <MemoryGame onFinish={() => setStats({ memoryWins: stats.memoryWins + 1 })} />}</main>
+  return <main className="content-page"><div className="page-heading"><div><span className="eyebrow">MOSTOR PLAY</span><h2>Игры</h2><p>Играйте, выполняйте задания и зарабатывайте монеты.</p></div><CoinBalance value={data.coins} /></div><section className="quests-panel panel"><div className="quests-title"><Trophy /><div><h3>Задания</h3><p>Награды можно получить один раз.</p></div></div><div className="quest-list">{quests.map((quest) => { const progress = quest.progress(stats); const claimed = claims.includes(quest.id); return <article key={quest.id}><div><b>{quest.title}</b><small>{quest.text}</small><i><em style={{ width: `${progress / quest.goal * 100}%` }} /></i><span>{progress} / {quest.goal}</span></div><button disabled={progress < quest.goal || claimed} onClick={() => claim(quest)}>{claimed ? <><Check />Получено</> : <>● {quest.reward}</>}</button></article> })}</div></section><div className="game-tabs"><button className={game === 'reaction' ? 'active' : ''} onClick={() => setGame('reaction')}><Zap />Импульс</button><button className={game === 'tictac' ? 'active' : ''} onClick={() => setGame('tictac')}># Крестики-нолики</button><button className={game === 'memory' ? 'active' : ''} onClick={() => setGame('memory')}><Gamepad2 />Пары</button><button className={game === 'arcade' ? 'active' : ''} onClick={() => setGame('arcade')}>100 игр</button></div>{game === 'reaction' && <ReactionGame onFinish={(score) => setStats({ reactionBest: Math.max(stats.reactionBest, score) })} />}{game === 'tictac' && <TicTacToe onFinish={() => setStats({ tictacGames: stats.tictacGames + 1 })} />}{game === 'memory' && <MemoryGame onFinish={() => setStats({ memoryWins: stats.memoryWins + 1 })} />}{game === 'arcade' && <section className="panel" style={{ padding: 18 }}><div ref={hubRef} /></section>}</main>
 }
 
 function ReactionGame({ onFinish }) {
