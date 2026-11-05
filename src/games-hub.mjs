@@ -1,3 +1,5 @@
+import { encodeRom, emulatorDocument, romPlatform } from './rom-platforms.mjs'
+
 export const GAME_TYPES = [
   { id: 'pulse', name: 'Импульс', icon: '⚡', description: 'Нажимай на ядро, пока не вышло время.' },
   { id: 'math', name: 'Математика', icon: '✦', description: 'Решай примеры и набирай очки.' },
@@ -62,6 +64,8 @@ const styles = `
 .hub-nes-pad { display:flex;justify-content:center;gap:20px;align-items:center;flex-wrap:wrap;margin-top:15px;touch-action:none;user-select:none }
 .hub-nes-pad button { min-width:42px;min-height:42px;border:1px solid #566356;border-radius:9px;background:#283728;color:#fff;touch-action:none }
 .hub-nes-pad button:active { background:#caff3d;color:#111 }
+.hub-platform-frame { display:block;width:100%;height:min(640px,75vh);margin-top:12px;border:1px solid #394139;border-radius:10px;background:#050605 }
+.hub-platform-frame[hidden] { display:none }
 `
 
 export function mountGamesHub(root) {
@@ -78,6 +82,7 @@ export function mountGamesHub(root) {
   let disposed = false
   let timer
   let gameUrl
+  let platformUrl
   let nesBrowser
   let nesPlaying = false
   const clearTimer = () => { clearTimeout(timer); clearInterval(timer) }
@@ -317,7 +322,37 @@ export function mountGamesHub(root) {
     })
     nesPanel.append(romPicker, nesMessage, nesScreen, nesControls, pad)
     body.append(nesPanel)
+
+    const platformPanel = element('details', 'hub-import')
+    platformPanel.append(element('summary', '', 'Запустить Game Boy / GBA / SNES / Mega Drive'))
+    platformPanel.append(element('p', '', 'Поддерживаются .gb, .gbc, .gba, .sfc, .smc, .md, .gen и .bin. Система определяется автоматически. ROM остаётся в памяти устройства; для загрузки ядра нужен интернет.'))
+    const platformPicker = element('input')
+    platformPicker.type = 'file'
+    platformPicker.accept = '.gb,.gbc,.gba,.sfc,.smc,.md,.gen,.bin'
+    const platformMessage = element('p', 'hub-nes-message', 'Выбери ROM и нажми Play.')
+    const platformFrame = element('iframe', 'hub-platform-frame')
+    platformFrame.title = 'Эмулятор загруженной игры'
+    platformFrame.setAttribute('sandbox', 'allow-scripts allow-pointer-lock')
+    platformFrame.setAttribute('allow', 'autoplay; gamepad')
+    platformFrame.hidden = true
+    const platformPlay = button('Play', async () => {
+      const file = platformPicker.files?.[0]
+      const platform = romPlatform(file?.name)
+      if (!file || !platform) { platformMessage.textContent = 'Выбери ROM поддерживаемой системы.'; return }
+      if (file.size > platform.maxSize) { platformMessage.textContent = `Файл слишком большой для ${platform.name}.`; return }
+      try {
+        platformMessage.textContent = `Подготовка ${platform.name}...`
+        const data = encodeRom(new Uint8Array(await file.arrayBuffer()))
+        if (platformUrl) URL.revokeObjectURL(platformUrl)
+        platformUrl = URL.createObjectURL(new Blob([emulatorDocument(platform.core, data)], { type: 'text/html' }))
+        platformFrame.src = platformUrl
+        platformFrame.hidden = false
+        platformMessage.textContent = `${platform.name}: ${file.name}. Игра загружается внутри эмулятора.`
+      } catch (reason) { platformMessage.textContent = `Не удалось запустить ROM: ${reason.message}` }
+    })
+    platformPanel.append(platformPicker, platformPlay, platformMessage, platformFrame)
+    body.append(platformPanel)
   }
   render()
-  return () => { disposed = true; clearTimer(); if (nesBrowser) nesBrowser.destroy(); if (gameUrl) URL.revokeObjectURL(gameUrl); root.replaceChildren() }
+  return () => { disposed = true; clearTimer(); if (nesBrowser) nesBrowser.destroy(); if (gameUrl) URL.revokeObjectURL(gameUrl); if (platformUrl) URL.revokeObjectURL(platformUrl); root.replaceChildren() }
 }
