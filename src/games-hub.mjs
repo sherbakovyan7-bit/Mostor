@@ -1,6 +1,7 @@
 import { encodeRom, emulatorDocument, romPlatform } from './rom-platforms.mjs'
 import { listGameRecordings, saveGameRecording } from './game-recordings.mjs'
 import { DEFAULT_NES_KEYS, NES_KEY_ACTIONS, NES_PLAYER_TWO_KEYS, nesKeyboardMap, normalizeNesKeys } from './nes-keys.mjs'
+import { validateNesRom } from './nes-rom.mjs'
 
 export const GAME_TYPES = [
   { id: 'pulse', name: 'Импульс', icon: '⚡', description: 'Нажимай на ядро, пока не вышло время.' },
@@ -103,9 +104,12 @@ export function mountGamesHub(root, options = {}) {
   let timer
   let gameUrl
   let platformUrl
+  let nesFallbackUrl
   let nesBrowser
   let nesPlaying = false
   let nesPanel
+  let nesLoadId = 0
+  let activeNesPane
   const heldNesKeys = new Set()
   const releaseNesKeys = () => {
     if (nesBrowser) for (const code of heldNesKeys) nesBrowser.keyboard.handleKeyUp({ keyCode: code, preventDefault() {} })
@@ -329,6 +333,7 @@ export function mountGamesHub(root, options = {}) {
 
   function render() {
     if (disposed) return
+    nesLoadId++
     pendingKeyAssignment?.abort()
     pendingKeyAssignment = null
     releaseNesKeys()
@@ -336,6 +341,8 @@ export function mountGamesHub(root, options = {}) {
     keyboardActions.clear()
     stopNesRecording()
     clearRecordingUrls()
+    if (activeNesPane) { activeNesPane.removeAttribute('src'); activeNesPane = null }
+    if (nesFallbackUrl) { URL.revokeObjectURL(nesFallbackUrl); nesFallbackUrl = null }
     if (nesBrowser) { nesBrowser.destroy(); nesBrowser = null; nesPlaying = false }
     body.replaceChildren()
     if (selected) {
@@ -426,15 +433,40 @@ export function mountGamesHub(root, options = {}) {
     const nesScreen = element('div', 'hub-nes-screen')
     const nesControls = element('div', 'hub-nes-controls')
     let nesTitle = 'NES'
+    let nesData
+    const fallbackFrame = element('iframe', 'hub-platform-frame')
+    fallbackFrame.title = 'Запасной NES-эмулятор'
+    fallbackFrame.setAttribute('allow', 'autoplay; gamepad')
+    fallbackFrame.setAttribute('sandbox', 'allow-scripts allow-pointer-lock')
+    fallbackFrame.hidden = true
+    const fallback = (reason) => {
+      if (disposed || activeNesPane !== fallbackFrame) return
+      releaseNesKeys()
+      stopNesRecording()
+      nesPlaying = false
+      if (nesBrowser) { nesBrowser.destroy(); nesBrowser = null }
+      nesScreen.replaceChildren()
+      playButton.disabled = pauseButton.disabled = resetButton.disabled = true
+      if (!nesData) { nesMessage.textContent = `Ошибка NES: ${reason}`; return }
+      try {
+        fallbackFrame.removeAttribute('src')
+        if (nesFallbackUrl) URL.revokeObjectURL(nesFallbackUrl)
+        nesFallbackUrl = URL.createObjectURL(new Blob([emulatorDocument('nes', encodeRom(nesData))], { type: 'text/html' }))
+        fallbackFrame.src = nesFallbackUrl
+        fallbackFrame.hidden = false
+        nesMessage.textContent = `${reason} Запущен другой NES-эмулятор. Нажми Play внутри него; клавиши настраиваются в его меню.`
+      } catch (error) { nesMessage.textContent = `Не удалось запустить запасной эмулятор: ${error.message}` }
+    }
     const playButton = button('Play', () => {
       if (!nesBrowser || nesPlaying) return
       try {
+        if (nesBrowser.nes.crashed) nesBrowser.nes.loadROM(nesData)
         nesBrowser.start(); nesPlaying = true; nesMessage.textContent = 'Игра запущена. Запись сохранится после паузы.'
         startNesRecording(nesScreen.querySelector('canvas'), nesTitle, nesMessage)
-      } catch (reason) { nesMessage.textContent = `Ошибка запуска: ${reason.message}` }
+      } catch (reason) { fallback(`Ошибка запуска: ${reason.message}`) }
     })
     const pauseButton = button('Pause', () => { if (nesBrowser && nesPlaying) { releaseNesKeys(); stopNesRecording(); nesBrowser.stop(); nesPlaying = false; nesMessage.textContent = 'Пауза. Запись сохраняется на этом устройстве.' } })
-    const resetButton = button('Reset', () => { if (nesBrowser) { releaseNesKeys(); stopNesRecording(); nesBrowser.nes.reset(); nesMessage.textContent = 'Игра перезапущена.'; if (nesPlaying) startNesRecording(nesScreen.querySelector('canvas'), nesTitle, nesMessage) } })
+    const resetButton = button('Reset', () => { if (nesBrowser) { try { releaseNesKeys(); stopNesRecording(); nesBrowser.nes.loadROM(nesData); nesMessage.textContent = 'Игра перезапущена.'; if (nesPlaying) startNesRecording(nesScreen.querySelector('canvas'), nesTitle, nesMessage) } catch (reason) { fallback(`Не удалось перезапустить ROM: ${reason.message}`) } } })
     playButton.disabled = pauseButton.disabled = resetButton.disabled = true
     nesControls.append(playButton, pauseButton, resetButton)
     const pad = element('div', 'hub-nes-pad')
@@ -450,29 +482,38 @@ export function mountGamesHub(root, options = {}) {
       pad.append(control)
     })
     romPicker.addEventListener('change', async () => {
+      const loadId = ++nesLoadId
       const file = romPicker.files?.[0]
       if (!file) return
+      stopNesRecording()
+      releaseNesKeys()
+      if (nesBrowser) { nesBrowser.destroy(); nesBrowser = null }
+      nesPlaying = false
+      playButton.disabled = pauseButton.disabled = resetButton.disabled = true
+      fallbackFrame.hidden = true
+      fallbackFrame.removeAttribute('src')
+      if (nesFallbackUrl) { URL.revokeObjectURL(nesFallbackUrl); nesFallbackUrl = null }
+      nesData = null
       if (!/\.nes$/i.test(file.name) || file.size > 4 * 1024 * 1024) { nesMessage.textContent = 'Нужен .nes-файл до 4 МБ.'; return }
       try {
         const data = new Uint8Array(await file.arrayBuffer())
-        if (data.length < 16 || data[0] !== 0x4e || data[1] !== 0x45 || data[2] !== 0x53 || data[3] !== 0x1a) throw new Error('Это не NES ROM (нет заголовка iNES).')
+        if (disposed || loadId !== nesLoadId) return
+        validateNesRom(data)
+        nesData = data
+        nesTitle = file.name
         const jsnes = await loadNesEmulator()
-        stopNesRecording()
-        releaseNesKeys()
-        if (nesBrowser) nesBrowser.destroy()
+        if (disposed || loadId !== nesLoadId) return
         nesScreen.replaceChildren()
-        nesBrowser = new jsnes.Browser({ container: nesScreen, onError: (reason) => { stopNesRecording(); nesPlaying = false; nesMessage.textContent = `Ошибка игры: ${reason.message || reason}` } })
+        nesBrowser = new jsnes.Browser({ container: nesScreen, onError: (reason) => { fallback(`Ошибка игры: ${reason.message || reason}`) } })
         document.removeEventListener('keydown', nesBrowser.keyboard.handleKeyDown)
         document.removeEventListener('keyup', nesBrowser.keyboard.handleKeyUp)
         document.removeEventListener('keypress', nesBrowser.keyboard.handleKeyPress)
         applyKeys()
-        nesBrowser.loadROM(data)
-        nesBrowser.stop()
+        nesBrowser.nes.loadROM(data)
         nesPlaying = false
-        nesTitle = file.name
         nesMessage.textContent = `${file.name} загружена. Нажми Play для запуска.`
         playButton.disabled = pauseButton.disabled = resetButton.disabled = false
-      } catch (reason) { nesMessage.textContent = `Не удалось открыть ROM: ${reason.message}`; playButton.disabled = pauseButton.disabled = resetButton.disabled = true }
+      } catch (reason) { if (!disposed && loadId === nesLoadId) { if (nesData) fallback(`JSNES не открыл ROM: ${reason.message}`); else nesMessage.textContent = `Не удалось открыть ROM: ${reason.message}` } }
     })
     const keyPanel = element('details', 'hub-key-settings')
     keyPanel.append(element('summary', '', 'Настроить клавиши NES'))
@@ -509,8 +550,9 @@ export function mountGamesHub(root, options = {}) {
     }
     renderKeys()
     keyPanel.append(keyHelp, keyGrid, button('Сбросить клавиши', () => { keySettings = { ...defaultKeys }; localStorage.removeItem(keyStorageKey); applyKeys(); renderKeys() }, 'hub-key-reset'))
-    nesPanel.append(romPicker, nesMessage, nesScreen, nesControls, pad, keyPanel)
+    nesPanel.append(romPicker, nesMessage, nesScreen, nesControls, pad, keyPanel, fallbackFrame)
     body.append(nesPanel)
+    activeNesPane = fallbackFrame
 
     const recordingsPanel = element('details', 'hub-recordings')
     recordingsPanel.append(element('summary', '', 'Видеозаписи NES · 24 часа'))
@@ -572,5 +614,5 @@ export function mountGamesHub(root, options = {}) {
     body.append(platformPanel)
   }
   render()
-  return () => { disposed = true; pendingKeyAssignment?.abort(); releaseNesKeys(); window.removeEventListener('keydown', handleNesKeyDown); window.removeEventListener('keyup', handleNesKeyUp); window.removeEventListener('blur', releaseNesKeys); document.removeEventListener('visibilitychange', releaseWhenHidden); window.removeEventListener('keydown', handleGameKeys); clearInterval(expiryTimer); clearTimer(); stopNesRecording(); clearRecordingUrls(); if (nesBrowser) nesBrowser.destroy(); if (gameUrl) URL.revokeObjectURL(gameUrl); if (platformUrl) URL.revokeObjectURL(platformUrl); root.replaceChildren() }
+  return () => { disposed = true; pendingKeyAssignment?.abort(); releaseNesKeys(); window.removeEventListener('keydown', handleNesKeyDown); window.removeEventListener('keyup', handleNesKeyUp); window.removeEventListener('blur', releaseNesKeys); document.removeEventListener('visibilitychange', releaseWhenHidden); window.removeEventListener('keydown', handleGameKeys); clearInterval(expiryTimer); clearTimer(); stopNesRecording(); clearRecordingUrls(); if (nesBrowser) nesBrowser.destroy(); if (gameUrl) URL.revokeObjectURL(gameUrl); if (platformUrl) URL.revokeObjectURL(platformUrl); if (nesFallbackUrl) URL.revokeObjectURL(nesFallbackUrl); root.replaceChildren() }
 }
