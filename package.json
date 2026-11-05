@@ -5,8 +5,8 @@
   "description": "Mostor social network for posts, video, games and messages",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node scripts/prepare-nes.mjs && vite",
+    "build": "node scripts/prepare-nes.mjs && vite build",
     "preview": "vite preview",
     "desktop": "npm run build && electron .",
     "build:exe": "npm run build && electron-builder --win nsis",
@@ -17,6 +17,7 @@
     "@capacitor/android": "^7.4.4",
     "@capacitor/core": "^7.4.4",
     "firebase": "^11.10.0",
+    "jsnes": "^2.1.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

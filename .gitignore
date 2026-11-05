@@ -8,6 +8,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+public/jsnes.min.js
 
 android/.gradle/
 android/build/

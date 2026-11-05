@@ -15,6 +15,22 @@ export const GAMES = GAME_TYPES.flatMap((type) => Array.from({ length: 20 }, (_,
   description: type.description,
 })))
 
+let nesScriptPromise
+
+export function loadNesEmulator() {
+  if (globalThis.jsnes?.Browser) return Promise.resolve(globalThis.jsnes)
+  if (!nesScriptPromise) {
+    nesScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = new URL('./jsnes.min.js', document.baseURI).href
+      script.onload = () => globalThis.jsnes?.Browser ? resolve(globalThis.jsnes) : reject(new Error('NES-эмулятор недоступен'))
+      script.onerror = () => reject(new Error('Не удалось загрузить NES-эмулятор'))
+      document.head.append(script)
+    }).catch((error) => { nesScriptPromise = null; throw error })
+  }
+  return nesScriptPromise
+}
+
 const styles = `
 .hub { color:#f3f4ef;font:14px Arial,sans-serif;text-align:left }
 .hub * { box-sizing:border-box }
@@ -39,6 +55,13 @@ const styles = `
 .hub-import summary { cursor:pointer;font-weight:bold }.hub-import p { color:#aab5aa;line-height:1.5 }
 .hub-import input { max-width:100%;margin:10px 0 }.hub-import iframe { display:block;width:100%;height:420px;margin-top:12px;border:1px solid #394139;border-radius:10px;background:#fff }
 .hub-import iframe[hidden] { display:none }
+.hub-nes-screen { width:min(512px,100%);aspect-ratio:256/240;margin:14px auto;background:#050605;border:2px solid #384538;border-radius:10px;overflow:hidden }
+.hub-nes-screen canvas { width:100%;height:100%;image-rendering:pixelated }
+.hub-nes-controls { display:flex;justify-content:center;gap:8px;flex-wrap:wrap }.hub-nes-controls button { padding:9px 14px;border:1px solid #394139;border-radius:9px;background:#caff3d;color:#111;cursor:pointer }
+.hub-nes-controls button:disabled { opacity:.5;cursor:default }.hub-nes-message { color:#aab5aa;line-height:1.5 }
+.hub-nes-pad { display:flex;justify-content:center;gap:20px;align-items:center;flex-wrap:wrap;margin-top:15px;touch-action:none;user-select:none }
+.hub-nes-pad button { min-width:42px;min-height:42px;border:1px solid #566356;border-radius:9px;background:#283728;color:#fff;touch-action:none }
+.hub-nes-pad button:active { background:#caff3d;color:#111 }
 `
 
 export function mountGamesHub(root) {
@@ -55,6 +78,8 @@ export function mountGamesHub(root) {
   let disposed = false
   let timer
   let gameUrl
+  let nesBrowser
+  let nesPlaying = false
   const clearTimer = () => { clearTimeout(timer); clearInterval(timer) }
   const element = (tag, className, text) => {
     const node = document.createElement(tag)
@@ -182,6 +207,7 @@ export function mountGamesHub(root) {
 
   function render() {
     if (disposed) return
+    if (nesBrowser) { nesBrowser.destroy(); nesBrowser = null; nesPlaying = false }
     body.replaceChildren()
     if (selected) {
       body.append(button('← Выбор игр', () => { clearTimer(); selected = null; render() }, 'hub-back'))
@@ -242,7 +268,56 @@ export function mountGamesHub(root) {
     })
     importPanel.append(picker, error, frame)
     body.append(importPanel)
+
+    const nesPanel = element('details', 'hub-import')
+    nesPanel.append(element('summary', '', 'Запустить NES ROM (.nes)'))
+    nesPanel.append(element('p', '', 'Выбери свой .nes-файл и нажми Play. ROM запускается только на твоём устройстве и не загружается на сервер. Клавиши: стрелки — движение, X — A, Z — B, Enter — Start, Ctrl — Select.'))
+    const romPicker = element('input')
+    romPicker.type = 'file'; romPicker.accept = '.nes,application/octet-stream'
+    const nesMessage = element('p', 'hub-nes-message', 'Выбери NES-файл до 4 МБ.')
+    const nesScreen = element('div', 'hub-nes-screen')
+    const nesControls = element('div', 'hub-nes-controls')
+    const playButton = button('Play', () => {
+      if (!nesBrowser || nesPlaying) return
+      try { nesBrowser.start(); nesPlaying = true; nesMessage.textContent = 'Игра запущена.' } catch (reason) { nesMessage.textContent = `Ошибка запуска: ${reason.message}` }
+    })
+    const pauseButton = button('Pause', () => { if (nesBrowser && nesPlaying) { nesBrowser.stop(); nesPlaying = false; nesMessage.textContent = 'Пауза.' } })
+    const resetButton = button('Reset', () => { if (nesBrowser) { nesBrowser.nes.reset(); nesMessage.textContent = 'Игра перезапущена.' } })
+    playButton.disabled = pauseButton.disabled = resetButton.disabled = true
+    nesControls.append(playButton, pauseButton, resetButton)
+    const pad = element('div', 'hub-nes-pad')
+    const padKeys = [['↑', 38], ['←', 37], ['↓', 40], ['→', 39], ['B', 90], ['A', 88], ['Start', 13], ['Select', 17]]
+    padKeys.forEach(([name, keyCode]) => {
+      const control = button(name, () => {}, 'hub-nes-button')
+      const press = (event) => { event.preventDefault(); if (nesBrowser) nesBrowser.keyboard.handleKeyDown({ keyCode, preventDefault() {} }) }
+      const release = (event) => { event.preventDefault(); if (nesBrowser) nesBrowser.keyboard.handleKeyUp({ keyCode, preventDefault() {} }) }
+      control.addEventListener('pointerdown', press)
+      control.addEventListener('pointerup', release)
+      control.addEventListener('pointercancel', release)
+      control.addEventListener('pointerleave', release)
+      pad.append(control)
+    })
+    romPicker.addEventListener('change', async () => {
+      const file = romPicker.files?.[0]
+      if (!file) return
+      if (!/\.nes$/i.test(file.name) || file.size > 4 * 1024 * 1024) { nesMessage.textContent = 'Нужен .nes-файл до 4 МБ.'; return }
+      try {
+        const data = new Uint8Array(await file.arrayBuffer())
+        if (data.length < 16 || data[0] !== 0x4e || data[1] !== 0x45 || data[2] !== 0x53 || data[3] !== 0x1a) throw new Error('Это не NES ROM (нет заголовка iNES).')
+        const jsnes = await loadNesEmulator()
+        if (nesBrowser) nesBrowser.destroy()
+        nesScreen.replaceChildren()
+        nesBrowser = new jsnes.Browser({ container: nesScreen, onError: (reason) => { nesMessage.textContent = `Ошибка игры: ${reason.message || reason}` } })
+        nesBrowser.loadROM(data)
+        nesBrowser.stop()
+        nesPlaying = false
+        nesMessage.textContent = `${file.name} загружена. Нажми Play для запуска.`
+        playButton.disabled = pauseButton.disabled = resetButton.disabled = false
+      } catch (reason) { nesMessage.textContent = `Не удалось открыть ROM: ${reason.message}`; playButton.disabled = pauseButton.disabled = resetButton.disabled = true }
+    })
+    nesPanel.append(romPicker, nesMessage, nesScreen, nesControls, pad)
+    body.append(nesPanel)
   }
   render()
-  return () => { disposed = true; clearTimer(); if (gameUrl) URL.revokeObjectURL(gameUrl); root.replaceChildren() }
+  return () => { disposed = true; clearTimer(); if (nesBrowser) nesBrowser.destroy(); if (gameUrl) URL.revokeObjectURL(gameUrl); root.replaceChildren() }
 }
