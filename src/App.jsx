@@ -655,9 +655,13 @@ function WebRTCCall({ call, currentUser, close }) {
     let timeout
     let diagnosticsTimer
     const fail = (error) => { if (!disposed) setStatus(`Ошибка звонка: ${error?.message || error}`) }
+    const addCandidate = async (candidate) => {
+      try { await peer.addIceCandidate(new RTCIceCandidate(candidate)) }
+      catch (error) { if (!disposed) console.warn('ICE-кандидат отклонён:', error) }
+    }
     const setRemoteDescription = async (description) => {
       await peer.setRemoteDescription(new RTCSessionDescription(description))
-      for (const candidate of queuedCandidates.splice(0)) await peer.addIceCandidate(new RTCIceCandidate(candidate))
+      for (const candidate of queuedCandidates.splice(0)) await addCandidate(candidate)
     }
     const answerOffer = async (offer) => {
       if (!ready || !offer || peer.remoteDescription || answering || disposed) return
@@ -704,7 +708,7 @@ function WebRTCCall({ call, currentUser, close }) {
       snapshot.docChanges().forEach((change) => {
         if (change.type !== 'added' || disposed) return
         const candidate = change.doc.data()
-        if (peer.remoteDescription) peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(fail)
+        if (peer.remoteDescription) addCandidate(candidate)
         else queuedCandidates.push(candidate)
       })
     }, fail)
