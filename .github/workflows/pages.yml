@@ -41,6 +41,8 @@ jobs:
         run: |
           cp 'Техперерыв.png' maintenance/
           cp src/games-hub.mjs maintenance/games-hub.mjs
+          cp src/nes-keys.mjs maintenance/nes-keys.mjs
+          cp src/game-recordings.mjs maintenance/game-recordings.mjs
           cp src/rom-platforms.mjs maintenance/rom-platforms.mjs
           cp node_modules/jsnes/dist/jsnes.min.js maintenance/jsnes.min.js
 

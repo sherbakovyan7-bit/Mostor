@@ -1,4 +1,6 @@
 import { encodeRom, emulatorDocument, romPlatform } from './rom-platforms.mjs'
+import { listGameRecordings, saveGameRecording } from './game-recordings.mjs'
+import { DEFAULT_NES_KEYS, NES_KEY_ACTIONS, NES_PLAYER_TWO_KEYS, nesKeyboardMap, normalizeNesKeys } from './nes-keys.mjs'
 
 export const GAME_TYPES = [
   { id: 'pulse', name: 'Импульс', icon: '⚡', description: 'Нажимай на ядро, пока не вышло время.' },
@@ -16,6 +18,11 @@ export const GAMES = GAME_TYPES.flatMap((type) => Array.from({ length: 20 }, (_,
   icon: type.icon,
   description: type.description,
 })))
+
+export const FEATURED_GAMES = [
+  { id: '2048', title: '2048', description: 'Объединяй плитки стрелками. Автор: Gabriele Cirulli · MIT.', url: 'https://gabrielecirulli.github.io/2048/' },
+  { id: 'astray', title: 'Astray', description: 'Проведи шар через лабиринт стрелками. Автор: wwwtyro · Unlicense.', url: 'https://wwwtyro.github.io/Astray/' },
+]
 
 let nesScriptPromise
 
@@ -64,11 +71,24 @@ const styles = `
 .hub-nes-pad { display:flex;justify-content:center;gap:20px;align-items:center;flex-wrap:wrap;margin-top:15px;touch-action:none;user-select:none }
 .hub-nes-pad button { min-width:42px;min-height:42px;border:1px solid #566356;border-radius:9px;background:#283728;color:#fff;touch-action:none }
 .hub-nes-pad button:active { background:#caff3d;color:#111 }
+.hub-key-settings { margin-top:14px;padding:13px;border:1px solid #394139;border-radius:10px }
+.hub-key-settings summary { cursor:pointer;font-weight:bold }
+.hub-key-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:14px 0 }
+.hub-key-grid button,.hub-key-reset { padding:9px;border:1px solid #566356;border-radius:8px;background:#263026;color:#fff;text-align:left;cursor:pointer }
+.hub-key-grid button.waiting { border-color:#caff3d;color:#caff3d }
+.hub-key-settings p { color:#aab5aa }
 .hub-platform-frame { display:block;width:100%;height:min(640px,75vh);margin-top:12px;border:1px solid #394139;border-radius:10px;background:#050605 }
 .hub-platform-frame[hidden] { display:none }
+.hub-featured { margin:16px 0;padding:15px;border:1px solid #394139;border-radius:12px;background:#141a14 }.hub-featured h3 { margin:0 0 6px }.hub-featured>p { color:#aab5aa }
+.hub-featured-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:9px }.hub-featured a { display:block;padding:13px;border:1px solid #394139;border-radius:10px;background:#1a211a;color:#f3f4ef;text-decoration:none }
+.hub-featured a:hover,.hub-featured a:focus-visible { border-color:#caff3d }.hub-featured a strong,.hub-featured a small { display:block }.hub-featured a small { margin-top:7px;color:#aab5aa;line-height:1.4 }
+.hub-key-hint { margin:10px 0;color:#aab5aa }
+.hub-recordings { margin-top:16px;padding:14px;border:1px solid #394139;border-radius:10px;background:#141a14 }
+.hub-recordings summary { cursor:pointer;font-weight:bold }.hub-recordings article { margin-top:12px;padding:10px;border:1px solid #394139;border-radius:9px }
+.hub-recordings article b,.hub-recordings article small { display:block;margin-bottom:6px }.hub-recordings video { display:block;width:min(512px,100%);margin:8px 0 }
 `
 
-export function mountGamesHub(root) {
+export function mountGamesHub(root, options = {}) {
   if (!root) return () => {}
   const style = document.createElement('style')
   style.textContent = styles
@@ -85,6 +105,80 @@ export function mountGamesHub(root) {
   let platformUrl
   let nesBrowser
   let nesPlaying = false
+  let nesPanel
+  const heldNesKeys = new Set()
+  const releaseNesKeys = () => {
+    if (nesBrowser) for (const code of heldNesKeys) nesBrowser.keyboard.handleKeyUp({ keyCode: code, preventDefault() {} })
+    heldNesKeys.clear()
+  }
+  const handleNesKeyDown = (event) => {
+    if (!nesBrowser || !nesPlaying || !nesPanel?.open || root.closest('[hidden]') || document.hidden || pendingKeyAssignment || event.altKey || event.metaKey ||
+      event.target?.closest?.('input,textarea,select,[contenteditable="true"]')) return
+    const code = event.keyCode || event.which
+    if (event.ctrlKey && code !== 17) return
+    if ((code === 13 || code === 32) && event.target?.closest?.('button,a,summary,video')) return
+    if (!nesBrowser.keyboard.keys[code]) return
+    event.preventDefault()
+    if (heldNesKeys.has(code)) return
+    heldNesKeys.add(code)
+    nesBrowser.keyboard.handleKeyDown(event)
+  }
+  const handleNesKeyUp = (event) => {
+    const code = event.keyCode || event.which
+    if (!heldNesKeys.has(code)) return
+    event.preventDefault()
+    nesBrowser?.keyboard.handleKeyUp(event)
+    heldNesKeys.delete(code)
+  }
+  window.addEventListener('keydown', handleNesKeyDown)
+  window.addEventListener('keyup', handleNesKeyUp)
+  window.addEventListener('blur', releaseNesKeys)
+  const releaseWhenHidden = () => { if (document.hidden) releaseNesKeys() }
+  document.addEventListener('visibilitychange', releaseWhenHidden)
+  let nesRecorder
+  let recordingsOpen = false
+  let recordingUrls = []
+  let refreshRecordings = () => {}
+  const expiryTimer = setInterval(() => { listGameRecordings().then(() => { if (recordingsOpen) refreshRecordings() }).catch(() => {}) }, 60 * 1000)
+  listGameRecordings().catch(() => {})
+  const clearRecordingUrls = () => { recordingUrls.forEach((url) => URL.revokeObjectURL(url)); recordingUrls = [] }
+  const stopNesRecording = () => {
+    if (nesRecorder?.state === 'recording') nesRecorder.stop()
+    nesRecorder = null
+  }
+  const startNesRecording = (screen, title, message) => {
+    if (!globalThis.MediaRecorder || !screen?.captureStream) { message.textContent = 'Игра запущена. Запись видео недоступна в этом браузере.'; return }
+    try {
+      const mimeType = ['video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find((type) => MediaRecorder.isTypeSupported(type))
+      if (!mimeType) throw new Error('Нет поддерживаемого видеоформата')
+      const stream = screen.captureStream(20)
+      const chunks = []
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 500000 })
+      nesRecorder = recorder
+      recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data) }
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: recorder.mimeType })
+        stream.getTracks().forEach((track) => track.stop())
+        saveGameRecording({ blob, title }).then(() => {
+          if (!disposed && recordingsOpen) refreshRecordings()
+        }).catch((reason) => { if (!disposed) message.textContent = `Не удалось сохранить запись: ${reason.message}` })
+      }
+      recorder.onerror = () => { message.textContent = 'Не удалось записать видео этой партии.' }
+      recorder.start(1000)
+    } catch (reason) { message.textContent = `Игра запущена. Запись недоступна: ${reason.message}` }
+  }
+  const keyStorageKey = 'mostor-nes-keymap'
+  let pendingKeyAssignment
+  const keyActions = NES_KEY_ACTIONS
+  const defaultKeys = DEFAULT_NES_KEYS
+  let keySettings
+  try { keySettings = normalizeNesKeys(JSON.parse(localStorage.getItem(keyStorageKey) || '{}')) } catch { keySettings = { ...defaultKeys } }
+  const applyKeys = () => {
+    if (!nesBrowser) return
+    releaseNesKeys()
+    const keys = nesKeyboardMap(nesBrowser.keyboard.keys, keySettings, globalThis.jsnes.Controller)
+    nesBrowser.keyboard.setKeys(keys)
+  }
   const clearTimer = () => { clearTimeout(timer); clearInterval(timer) }
   const element = (tag, className, text) => {
     const node = document.createElement(tag)
@@ -98,6 +192,19 @@ export function mountGamesHub(root) {
     node.addEventListener('click', action)
     return node
   }
+  const keyboardActions = new Map()
+  const handleGameKeys = (event) => {
+    if (disposed || !selected || !root.contains(document.activeElement) && document.activeElement !== document.body) return
+    const target = event.target
+    if (target?.closest?.('input,textarea,select,summary,iframe,video')) return
+    const action = keyboardActions.get(event.code)
+    if (!action) return
+    event.preventDefault()
+    if (event.repeat) return
+    action()
+  }
+  window.addEventListener('keydown', handleGameKeys)
+  const bindKeys = (bindings) => { keyboardActions.clear(); for (const [code, action] of Object.entries(bindings)) keyboardActions.set(code, action) }
   const title = (parent, text) => parent.append(element('h3', '', text))
   const note = (parent, text) => parent.append(element('p', '', text))
   const score = (parent) => { const node = element('div', 'hub-score', 'Очки: 0'); parent.append(node); return (value) => { node.textContent = `Очки: ${value}` } }
@@ -111,6 +218,8 @@ export function mountGamesHub(root) {
   function renderGame(stage, game) {
     const level = game.level
     title(stage, game.title)
+    const keyHints = { pulse: 'Пробел / Enter — нажимать.', math: '1, 2, 3 — выбрать ответ.', reaction: 'Пробел / Enter — начать и нажать на сигнал.', memory: 'Стрелки — выбрать карту, пробел / Enter — открыть.', sequence: 'Пробел — начать, 1–4 — повторить последовательность.' }
+    stage.append(element('p', 'hub-key-hint', keyHints[game.type]))
     if (game.type === 'pulse') {
       const time = Math.max(5, 16 - Math.floor(level / 2))
       const target = 8 + level * 2
@@ -129,6 +238,7 @@ export function mountGamesHub(root) {
         if (running) display.textContent = `Время: ${remaining} · Очки: ${points}`
       })
       stage.append(core)
+      bindKeys({ Space: () => core.click(), Enter: () => core.click() })
     } else if (game.type === 'math') {
       let points = 0, rounds = 0
       const update = score(stage)
@@ -146,6 +256,7 @@ export function mountGamesHub(root) {
         variants.forEach((value) => answers.append(button(String(value), () => { if (value === result) { points++; update(points) }; rounds++; next() }, 'hub-option')))
       }
       next()
+      bindKeys(Object.fromEntries(['Digit1', 'Digit2', 'Digit3', 'Numpad1', 'Numpad2', 'Numpad3'].map((code, index) => [code, () => answers.children[index % 3]?.click()])))
     } else if (game.type === 'reaction') {
       let started = 0, waiting = false
       note(stage, `Дождись зелёной кнопки. Цель: меньше ${Math.max(230, 700 - level * 20)} мс.`)
@@ -158,6 +269,7 @@ export function mountGamesHub(root) {
         timer = setTimeout(() => { waiting = false; started = performance.now(); action.textContent = 'ЖМИ!'; message.textContent = 'Сейчас!' }, 800 + Math.random() * 2400)
       })
       stage.append(action)
+      bindKeys({ Space: () => action.click(), Enter: () => action.click() })
     } else if (game.type === 'memory') {
       const pairs = Math.min(8, 3 + Math.floor(level / 4))
       let deck, opened, found, locked
@@ -183,6 +295,9 @@ export function mountGamesHub(root) {
       }
       stage.append(button('Перемешать', () => { clearTimer(); reset() }, 'hub-reset'))
       reset()
+      let focused = 0
+      const focusCard = () => grid.children[focused]?.focus()
+      bindKeys({ ArrowLeft: () => { focused = (focused + deck.length - 1) % deck.length; focusCard() }, ArrowRight: () => { focused = (focused + 1) % deck.length; focusCard() }, ArrowUp: () => { focused = (focused + deck.length - 4) % deck.length; focusCard() }, ArrowDown: () => { focused = (focused + 4) % deck.length; focusCard() }, Space: () => grid.children[focused]?.click(), Enter: () => grid.children[focused]?.click() })
     } else {
       const count = Math.min(8, 2 + Math.floor(level / 3))
       const display = element('div', 'hub-score', `Повтори ${count} вспышки`)
@@ -206,12 +321,21 @@ export function mountGamesHub(root) {
         }
         timer = setTimeout(flash, 350)
       }
-      stage.append(button('Показать', begin))
+      const startSequence = button('Показать', begin)
+      stage.append(startSequence)
+      bindKeys({ Digit1: () => tiles[0].click(), Digit2: () => tiles[1].click(), Digit3: () => tiles[2].click(), Digit4: () => tiles[3].click(), Numpad1: () => tiles[0].click(), Numpad2: () => tiles[1].click(), Numpad3: () => tiles[2].click(), Numpad4: () => tiles[3].click(), Space: () => startSequence.click() })
     }
   }
 
   function render() {
     if (disposed) return
+    pendingKeyAssignment?.abort()
+    pendingKeyAssignment = null
+    releaseNesKeys()
+    nesPanel = null
+    keyboardActions.clear()
+    stopNesRecording()
+    clearRecordingUrls()
     if (nesBrowser) { nesBrowser.destroy(); nesBrowser = null; nesPlaying = false }
     body.replaceChildren()
     if (selected) {
@@ -221,9 +345,27 @@ export function mountGamesHub(root) {
       renderGame(stage, selected)
       return
     }
+    if (options.initialGameId) {
+      const invited = GAMES.find((game) => game.id === options.initialGameId)
+      options.initialGameId = null
+      if (invited) { play(invited); return }
+    }
     const head = element('div', 'hub-head')
     head.append(element('h2', '', 'Игровой зал'), element('span', '', `${GAMES.length} уровней · 5 режимов`))
     body.append(head)
+    const featured = element('section', 'hub-featured')
+    featured.append(element('h3', '', 'Готовые игры'), element('p', '', 'Наши 100 уровней — ниже. Сторонние игры открываются на сайтах авторов в новой вкладке.'))
+    const featuredGrid = element('div', 'hub-featured-grid')
+    FEATURED_GAMES.forEach((item) => {
+      const link = element('a')
+      link.href = item.url
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      link.append(element('strong', '', item.title), element('small', '', item.description))
+      featuredGrid.append(link)
+    })
+    featured.append(featuredGrid)
+    body.append(featured)
     const filter = element('input', 'hub-filter')
     filter.placeholder = 'Найти игру или уровень...'
     filter.value = query
@@ -274,28 +416,33 @@ export function mountGamesHub(root) {
     importPanel.append(picker, error, frame)
     body.append(importPanel)
 
-    const nesPanel = element('details', 'hub-import')
+    nesPanel = element('details', 'hub-import')
+    nesPanel.addEventListener('toggle', () => { if (!nesPanel.open) releaseNesKeys() })
     nesPanel.append(element('summary', '', 'Запустить NES ROM (.nes)'))
-    nesPanel.append(element('p', '', 'Выбери свой .nes-файл и нажми Play. ROM запускается только на твоём устройстве и не загружается на сервер. Клавиши: стрелки — движение, X — A, Z — B, Enter — Start, Ctrl — Select.'))
+    nesPanel.append(element('p', '', 'Выбери свой .nes-файл и нажми Play. ROM запускается только на твоём устройстве. Клавиатура: стрелки — движение, X — A, Z — B, Enter — Start, Ctrl — Select. Клавиши можно изменить ниже.'))
     const romPicker = element('input')
     romPicker.type = 'file'; romPicker.accept = '.nes,application/octet-stream'
     const nesMessage = element('p', 'hub-nes-message', 'Выбери NES-файл до 4 МБ.')
     const nesScreen = element('div', 'hub-nes-screen')
     const nesControls = element('div', 'hub-nes-controls')
+    let nesTitle = 'NES'
     const playButton = button('Play', () => {
       if (!nesBrowser || nesPlaying) return
-      try { nesBrowser.start(); nesPlaying = true; nesMessage.textContent = 'Игра запущена.' } catch (reason) { nesMessage.textContent = `Ошибка запуска: ${reason.message}` }
+      try {
+        nesBrowser.start(); nesPlaying = true; nesMessage.textContent = 'Игра запущена. Запись сохранится после паузы.'
+        startNesRecording(nesScreen.querySelector('canvas'), nesTitle, nesMessage)
+      } catch (reason) { nesMessage.textContent = `Ошибка запуска: ${reason.message}` }
     })
-    const pauseButton = button('Pause', () => { if (nesBrowser && nesPlaying) { nesBrowser.stop(); nesPlaying = false; nesMessage.textContent = 'Пауза.' } })
-    const resetButton = button('Reset', () => { if (nesBrowser) { nesBrowser.nes.reset(); nesMessage.textContent = 'Игра перезапущена.' } })
+    const pauseButton = button('Pause', () => { if (nesBrowser && nesPlaying) { releaseNesKeys(); stopNesRecording(); nesBrowser.stop(); nesPlaying = false; nesMessage.textContent = 'Пауза. Запись сохраняется на этом устройстве.' } })
+    const resetButton = button('Reset', () => { if (nesBrowser) { releaseNesKeys(); stopNesRecording(); nesBrowser.nes.reset(); nesMessage.textContent = 'Игра перезапущена.'; if (nesPlaying) startNesRecording(nesScreen.querySelector('canvas'), nesTitle, nesMessage) } })
     playButton.disabled = pauseButton.disabled = resetButton.disabled = true
     nesControls.append(playButton, pauseButton, resetButton)
     const pad = element('div', 'hub-nes-pad')
-    const padKeys = [['↑', 38], ['←', 37], ['↓', 40], ['→', 39], ['B', 90], ['A', 88], ['Start', 13], ['Select', 17]]
-    padKeys.forEach(([name, keyCode]) => {
+    const padKeys = keyActions.map(([id, name]) => [id, name])
+    padKeys.forEach(([id, name]) => {
       const control = button(name, () => {}, 'hub-nes-button')
-      const press = (event) => { event.preventDefault(); if (nesBrowser) nesBrowser.keyboard.handleKeyDown({ keyCode, preventDefault() {} }) }
-      const release = (event) => { event.preventDefault(); if (nesBrowser) nesBrowser.keyboard.handleKeyUp({ keyCode, preventDefault() {} }) }
+      const press = (event) => { event.preventDefault(); if (nesBrowser) nesBrowser.nes.buttonDown(1, globalThis.jsnes.Controller[`BUTTON_${id}`]) }
+      const release = (event) => { event.preventDefault(); if (nesBrowser) nesBrowser.nes.buttonUp(1, globalThis.jsnes.Controller[`BUTTON_${id}`]) }
       control.addEventListener('pointerdown', press)
       control.addEventListener('pointerup', release)
       control.addEventListener('pointercancel', release)
@@ -310,18 +457,89 @@ export function mountGamesHub(root) {
         const data = new Uint8Array(await file.arrayBuffer())
         if (data.length < 16 || data[0] !== 0x4e || data[1] !== 0x45 || data[2] !== 0x53 || data[3] !== 0x1a) throw new Error('Это не NES ROM (нет заголовка iNES).')
         const jsnes = await loadNesEmulator()
+        stopNesRecording()
+        releaseNesKeys()
         if (nesBrowser) nesBrowser.destroy()
         nesScreen.replaceChildren()
-        nesBrowser = new jsnes.Browser({ container: nesScreen, onError: (reason) => { nesMessage.textContent = `Ошибка игры: ${reason.message || reason}` } })
+        nesBrowser = new jsnes.Browser({ container: nesScreen, onError: (reason) => { stopNesRecording(); nesPlaying = false; nesMessage.textContent = `Ошибка игры: ${reason.message || reason}` } })
+        document.removeEventListener('keydown', nesBrowser.keyboard.handleKeyDown)
+        document.removeEventListener('keyup', nesBrowser.keyboard.handleKeyUp)
+        document.removeEventListener('keypress', nesBrowser.keyboard.handleKeyPress)
+        applyKeys()
         nesBrowser.loadROM(data)
         nesBrowser.stop()
         nesPlaying = false
+        nesTitle = file.name
         nesMessage.textContent = `${file.name} загружена. Нажми Play для запуска.`
         playButton.disabled = pauseButton.disabled = resetButton.disabled = false
       } catch (reason) { nesMessage.textContent = `Не удалось открыть ROM: ${reason.message}`; playButton.disabled = pauseButton.disabled = resetButton.disabled = true }
     })
-    nesPanel.append(romPicker, nesMessage, nesScreen, nesControls, pad)
+    const keyPanel = element('details', 'hub-key-settings')
+    keyPanel.append(element('summary', '', 'Настроить клавиши NES'))
+    const keyHelp = element('p', '', 'Нажми на действие, затем нажми новую клавишу. Настройка сохраняется только на этом устройстве. Клавиши работают и в игре на странице техперерыва.')
+    const keyGrid = element('div', 'hub-key-grid')
+    const keyName = (code) => ({ 13: 'Enter', 17: 'Ctrl', 32: 'Space', 37: '←', 38: '↑', 39: '→', 40: '↓' })[code] || String.fromCharCode(code)
+    const renderKeys = () => {
+      pendingKeyAssignment?.abort()
+      pendingKeyAssignment = null
+      keyGrid.replaceChildren()
+      for (const [id, label] of keyActions) {
+        const control = button(`${label}: ${keyName(keySettings[id])}`, () => {
+          pendingKeyAssignment?.abort()
+          releaseNesKeys()
+          pendingKeyAssignment = new AbortController()
+          control.textContent = `${label}: нажми клавишу...`
+          control.classList.add('waiting')
+          const assign = (event) => {
+            event.preventDefault()
+            event.stopImmediatePropagation()
+            if (event.key === 'Escape') { keyHelp.textContent = 'Изменение отменено.'; renderKeys(); return }
+            const code = event.keyCode || event.which
+            if (!code || code > 255 || NES_PLAYER_TWO_KEYS.has(code) || Object.entries(keySettings).some(([other, used]) => other !== id && used === code) || (nesBrowser && nesBrowser.keyboard.keys[code]?.[0] === 2)) { keyHelp.textContent = 'Клавиша уже занята или не поддерживается. Выбери другую.'; renderKeys(); return }
+            keySettings[id] = code
+            localStorage.setItem(keyStorageKey, JSON.stringify(keySettings))
+            keyHelp.textContent = `${label}: ${keyName(code)}. Настройка сохранена.`
+            applyKeys()
+            renderKeys()
+          }
+          window.addEventListener('keydown', assign, { capture: true, once: true, signal: pendingKeyAssignment.signal })
+        })
+        keyGrid.append(control)
+      }
+    }
+    renderKeys()
+    keyPanel.append(keyHelp, keyGrid, button('Сбросить клавиши', () => { keySettings = { ...defaultKeys }; localStorage.removeItem(keyStorageKey); applyKeys(); renderKeys() }, 'hub-key-reset'))
+    nesPanel.append(romPicker, nesMessage, nesScreen, nesControls, pad, keyPanel)
     body.append(nesPanel)
+
+    const recordingsPanel = element('details', 'hub-recordings')
+    recordingsPanel.append(element('summary', '', 'Видеозаписи NES · 24 часа'))
+    recordingsPanel.append(element('p', 'hub-nes-message', 'Записи сохраняются на этом устройстве после паузы или выхода из игры. Через сутки после окончания партии они удаляются.'))
+    const recordingsList = element('div')
+    recordingsPanel.append(recordingsList)
+    refreshRecordings = async () => {
+      if (disposed || !recordingsOpen) return
+      try {
+        const recordings = await listGameRecordings()
+        if (disposed || !recordingsOpen) return
+        clearRecordingUrls()
+        recordingsList.replaceChildren()
+        if (!recordings.length) recordingsList.append(element('p', '', 'Записей пока нет.'))
+        recordings.forEach((recording) => {
+          const entry = element('article')
+          const video = element('video')
+          video.controls = true
+          const url = URL.createObjectURL(recording.blob)
+          recordingUrls.push(url)
+          video.src = url
+          entry.append(element('b', '', recording.title), element('small', '', `До ${new Date(recording.endedAt + 86400000).toLocaleString('ru')}`), video)
+          recordingsList.append(entry)
+        })
+      } catch (reason) { recordingsList.textContent = `Не удалось открыть записи: ${reason.message}` }
+    }
+    recordingsPanel.addEventListener('toggle', () => { recordingsOpen = recordingsPanel.open; if (recordingsOpen) refreshRecordings(); else clearRecordingUrls() })
+    if (options.initialRecordings) { options.initialRecordings = false; recordingsPanel.open = true }
+    body.append(recordingsPanel)
 
     const platformPanel = element('details', 'hub-import')
     platformPanel.append(element('summary', '', 'Запустить Game Boy / GBA / SNES / Mega Drive'))
@@ -354,5 +572,5 @@ export function mountGamesHub(root) {
     body.append(platformPanel)
   }
   render()
-  return () => { disposed = true; clearTimer(); if (nesBrowser) nesBrowser.destroy(); if (gameUrl) URL.revokeObjectURL(gameUrl); if (platformUrl) URL.revokeObjectURL(platformUrl); root.replaceChildren() }
+  return () => { disposed = true; pendingKeyAssignment?.abort(); releaseNesKeys(); window.removeEventListener('keydown', handleNesKeyDown); window.removeEventListener('keyup', handleNesKeyUp); window.removeEventListener('blur', releaseNesKeys); document.removeEventListener('visibilitychange', releaseWhenHidden); window.removeEventListener('keydown', handleGameKeys); clearInterval(expiryTimer); clearTimer(); stopNesRecording(); clearRecordingUrls(); if (nesBrowser) nesBrowser.destroy(); if (gameUrl) URL.revokeObjectURL(gameUrl); if (platformUrl) URL.revokeObjectURL(platformUrl); root.replaceChildren() }
 }
