@@ -399,7 +399,6 @@ function NetworkMessagesPage({ data, update, users, currentUser, initialFriend, 
   const [messages, setMessages] = useState([])
   const [text, setText] = useState('')
   const [call, setCall] = useState(null)
-  const [incoming, setIncoming] = useState(null)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [attachmentError, setAttachmentError] = useState('')
   const [recording, setRecording] = useState(null)
@@ -428,22 +427,6 @@ function NetworkMessagesPage({ data, update, users, currentUser, initialFriend, 
     if (!chatId) return
     messages.filter((message) => message.senderId !== currentUser.uid && !message.readBy?.includes(currentUser.uid)).forEach((message) => updateDoc(doc(db, 'chats', chatId, 'messages', message.id), { readBy: arrayUnion(currentUser.uid) }).catch(() => {}))
   }, [chatId, messages.length, currentUser.uid])
-  useEffect(() => onSnapshot(query(collection(db, 'calls'), where('calleeId', '==', currentUser.uid), where('status', '==', 'ringing')), (snapshot) => {
-    const item = snapshot.docs[0]
-    setIncoming(item ? { id: item.id, ...item.data() } : null)
-  }, (error) => { if (error.code !== 'permission-denied') console.error(error) }), [currentUser.uid])
-  useEffect(() => {
-    if (!incoming) return
-    navigator.vibrate?.([400, 250, 400, 800])
-    let context
-    let interval
-    try {
-      context = new (window.AudioContext || window.webkitAudioContext)()
-      const ring = () => [659, 784, 988].forEach((frequency, index) => { const oscillator = context.createOscillator(); const gain = context.createGain(); oscillator.frequency.value = frequency; gain.gain.setValueAtTime(.0001, context.currentTime); gain.gain.exponentialRampToValueAtTime(.12, context.currentTime + .02); gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + .25); oscillator.connect(gain).connect(context.destination); oscillator.start(context.currentTime + index * .18); oscillator.stop(context.currentTime + index * .18 + .3) })
-      ring(); interval = setInterval(ring, 1800)
-    } catch {}
-    return () => { clearInterval(interval); context?.close(); navigator.vibrate?.(0) }
-  }, [incoming?.id])
 
   const send = async (event) => {
     event.preventDefault()
@@ -486,11 +469,11 @@ function NetworkMessagesPage({ data, update, users, currentUser, initialFriend, 
   const startRecording = async (kind) => {
     if (recording || !contact) return
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: kind === 'circle' ? { width: 320, height: 320, facingMode: 'user' } : false })
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: kind === 'circle' ? { width: { ideal: 480 }, height: { ideal: 480 }, frameRate: { ideal: 20, max: 24 }, facingMode: 'user' } : false })
       const chunks = []
       const candidates = kind === 'voice' ? ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'] : ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm', 'video/mp4']
       const mimeType = candidates.find((type) => MediaRecorder.isTypeSupported(type)) || ''
-      const options = kind === 'voice' ? { audioBitsPerSecond: 40000 } : { videoBitsPerSecond: 180000, audioBitsPerSecond: 24000 }
+      const options = kind === 'voice' ? { audioBitsPerSecond: 40000 } : { videoBitsPerSecond: 480000, audioBitsPerSecond: 32000 }
       if (mimeType) options.mimeType = mimeType
       const recorder = new MediaRecorder(stream, options)
       recorderRef.current = { recorder, stream, kind, timer: null }
@@ -553,14 +536,12 @@ function NetworkMessagesPage({ data, update, users, currentUser, initialFriend, 
   const openStickerPack = (packId) => { const pack = stickerPacks.find((item) => item.id === packId); if (pack) setViewedStickerPack(pack) }
   useEffect(() => { const open = (event) => openStickerPack(event.detail); window.addEventListener('mostor:sticker-pack', open); return () => window.removeEventListener('mostor:sticker-pack', open) }, [stickerPacks])
   const addStickerPack = async (packId) => { const current = data.profile.stickerPacks || []; if (current.includes(packId)) return; const next = [...current, packId]; update({ profile: { ...data.profile, stickerPacks: next } }); await setDoc(doc(db, 'users', currentUser.uid), { stickerPacks: next }, { merge: true }); setViewedStickerPack(null) }
-  const acceptCall = () => { setCall({ id: incoming.id, mode: incoming.mode, target: incoming.caller, role: 'callee' }); setIncoming(null) }
-  const rejectCall = async () => { await updateDoc(doc(db, 'calls', incoming.id), { status: 'missed', endedAt: serverTimestamp() }); if (incoming.chatId && incoming.messageId) await updateDoc(doc(db, 'chats', incoming.chatId, 'messages', incoming.messageId), { systemType: 'missed' }); setIncoming(null) }
 
   if (circlePreview) return <Modal title="Предпросмотр кружка" close={() => { URL.revokeObjectURL(circlePreview.url); setCirclePreview(null) }}><div className="circle-preview"><video src={circlePreview.url} controls autoPlay loop muted playsInline onError={() => window.alert('Браузер не может воспроизвести запись. Переснимите кружок или отправьте видео через скрепку.')} /><p>Проверьте, что видео снялось, затем отправьте.</p><div><button className="secondary" onClick={() => { URL.revokeObjectURL(circlePreview.url); setCirclePreview(null); setTimeout(() => startRecording('circle'), 0) }}>Переснять</button><button className="primary" onClick={async () => { await sendMediaBlob(circlePreview.blob, 'circle'); URL.revokeObjectURL(circlePreview.url); setCirclePreview(null) }}><Send />Отправить</button></div></div></Modal>
   if (stickersOpen) { const owned = stickerPacks.filter((pack) => data.profile.stickerPacks?.includes(pack.id)); return <Modal title="Стикеры" close={() => setStickersOpen(false)} wide>{owned.length === 0 ? <div className="notification-empty"><Smile /><p>Добавьте стикерпак в разделе «Стикеры».</p></div> : <div className="chat-sticker-picker">{owned.map((pack) => <section key={pack.id}><h3>{pack.name}</h3><div>{pack.stickers.map((item) => <button onClick={() => sendSticker(pack, item)} key={item.id}><StickerAsset sticker={item} /></button>)}</div></section>)}</div>}</Modal> }
   if (viewedStickerPack) { const added = data.profile.stickerPacks?.includes(viewedStickerPack.id); return <Modal title="Стикерпак" close={() => setViewedStickerPack(null)} wide><div className="viewed-sticker-pack"><header><div><h2>{viewedStickerPack.name}</h2><p>Автор: {viewedStickerPack.author?.name}</p></div><button className={added ? 'secondary' : 'primary'} disabled={added} onClick={() => addStickerPack(viewedStickerPack.id)}>{added ? <><Check />Уже добавлен</> : <><Plus />Добавить себе</>}</button></header><div>{viewedStickerPack.stickers.map((item) => <StickerAsset sticker={item} key={item.id} />)}</div></div></Modal> }
 
-  return <><main className="messages-shell panel"><aside><div className="chat-sidebar-title"><h2>Люди</h2></div>{contacts.length === 0 && <p className="no-conversations">Пока нет других зарегистрированных пользователей.</p>}{contacts.map((user) => <button className={selected === user.uid ? 'active' : ''} onClick={() => setSelected(user.uid)} key={user.uid}><Avatar profile={user} /><span><b>{user.name}</b><small>@{user.username}</small></span></button>)}</aside>{contact ? <section className="dialog"><header><Avatar profile={contact} /><div><b>{contact.name}</b><small>аккаунт Mostor</small></div><button className="call-start" onClick={() => startCall('audio')}><Phone size={18} /></button><button className="call-start" onClick={() => startCall('video')}><Video size={19} /></button></header><div className="message-list">{messages.length === 0 && <div className="dialog-empty"><MessageCircle /><p>Напишите первое сообщение</p></div>}{messages.map((message) => <ChatMessage message={message} mine={message.senderId === currentUser.uid} key={message.id} />)}</div>{uploadProgress > 0 && <div className="chat-upload"><i><em style={{ width: `${uploadProgress}%` }} /></i><span>{uploadProgress}%</span></div>}<form onSubmit={send}><button type="button" onClick={() => fileInput.current.click()}><Paperclip /></button><input ref={fileInput} hidden type="file" onChange={(event) => attachFile(event.target.files[0])} /><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Сообщение..." /><button className="send"><Send /></button></form></section> : <section className="dialog-placeholder"><MessageCircle /><h3>Выберите пользователя</h3></section>}</main>{incoming && <div className="incoming-call"><Avatar profile={incoming.caller} size={70} /><div><span>Входящий {incoming.mode === 'video' ? 'видеозвонок' : 'звонок'}</span><h3>{incoming.caller?.name}</h3></div><button className="accept" onClick={acceptCall}><Phone /></button><button className="reject" onClick={rejectCall}><PhoneOff /></button></div>}{call && <WebRTCCall call={call} currentUser={currentUser} close={() => setCall(null)} />}</>
+  return <><main className="messages-shell panel"><aside><div className="chat-sidebar-title"><h2>Люди</h2></div>{contacts.length === 0 && <p className="no-conversations">Пока нет других зарегистрированных пользователей.</p>}{contacts.map((user) => <button className={selected === user.uid ? 'active' : ''} onClick={() => setSelected(user.uid)} key={user.uid}><Avatar profile={user} /><span><b>{user.name}</b><small>@{user.username}</small></span></button>)}</aside>{contact ? <section className="dialog"><header><Avatar profile={contact} /><div><b>{contact.name}</b><small>аккаунт Mostor</small></div><button className="call-start" onClick={() => startCall('audio')}><Phone size={18} /></button><button className="call-start" onClick={() => startCall('video')}><Video size={19} /></button></header><div className="message-list">{messages.length === 0 && <div className="dialog-empty"><MessageCircle /><p>Напишите первое сообщение</p></div>}{messages.map((message) => <ChatMessage message={message} mine={message.senderId === currentUser.uid} key={message.id} />)}</div>{uploadProgress > 0 && <div className="chat-upload"><i><em style={{ width: `${uploadProgress}%` }} /></i><span>{uploadProgress}%</span></div>}<form onSubmit={send}><button type="button" onClick={() => fileInput.current.click()}><Paperclip /></button><input ref={fileInput} hidden type="file" onChange={(event) => attachFile(event.target.files[0])} /><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Сообщение..." /><button className="send"><Send /></button></form></section> : <section className="dialog-placeholder"><MessageCircle /><h3>Выберите пользователя</h3></section>}</main>{call && <WebRTCCall call={call} close={() => setCall(null)} />}</>
 }
 
 function ChatMessage({ message, mine }) {
@@ -623,12 +604,37 @@ function CallsPage({ calls, users, currentUser, profile }) {
   return <><main className="content-page"><div className="page-heading"><div><span className="eyebrow">СВЯЗЬ</span><h2>Звонки</h2><p>История аудио- и видеовызовов Mostor.</p></div></div><div className="call-filters"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>Все</button><button className={filter === 'missed' ? 'active' : ''} onClick={() => setFilter('missed')}>Пропущенные</button></div>{visible.length === 0 ? <Empty icon={Phone} title="История звонков пуста" text="Начните аудио- или видеозвонок из раздела сообщений." /> : <div className="call-history panel">{visible.map((entry) => { const outgoing = entry.callerId === currentUser.uid; const person = outgoing ? entry.callee : entry.caller; return <article key={entry.id}><Avatar profile={person} size={48} /><div><b>{person?.name || 'Пользователь'}</b><span className={entry.status === 'missed' ? 'missed' : ''}>{entry.status === 'missed' ? <PhoneOff /> : outgoing ? <Phone /> : <Phone />} {entry.status === 'missed' ? 'Пропущенный' : outgoing ? 'Исходящий' : 'Входящий'} · {entry.mode === 'video' ? 'видео' : 'аудио'}</span><small>{new Date(entry.createdAt).toLocaleString('ru')}</small></div><button onClick={() => startAgain(entry, 'audio')}><Phone /></button><button onClick={() => startAgain(entry, 'video')}><Video /></button></article> })}</div>}</main>{activeCall && <WebRTCCall call={activeCall} currentUser={currentUser} close={() => setActiveCall(null)} />}</>
 }
 
+function IncomingCallListener({ currentUser }) {
+  const [incoming, setIncoming] = useState(null)
+  const [call, setCall] = useState(null)
+  useEffect(() => onSnapshot(query(collection(db, 'calls'), where('calleeId', '==', currentUser.uid)), (snapshot) => {
+    const ringing = snapshot.docs.find((item) => item.data().status === 'ringing')
+    setIncoming(ringing ? { id: ringing.id, ...ringing.data() } : null)
+  }, console.error), [currentUser.uid])
+  useEffect(() => {
+    if (!incoming) return
+    navigator.vibrate?.([400, 250, 400, 800])
+    let context
+    let timer
+    try {
+      context = new (window.AudioContext || window.webkitAudioContext)()
+      const ring = () => [659, 784, 988].forEach((frequency, index) => { const oscillator = context.createOscillator(); const gain = context.createGain(); oscillator.frequency.value = frequency; gain.gain.setValueAtTime(.0001, context.currentTime); gain.gain.exponentialRampToValueAtTime(.12, context.currentTime + .02); gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + .25); oscillator.connect(gain).connect(context.destination); oscillator.start(context.currentTime + index * .18); oscillator.stop(context.currentTime + index * .18 + .3) })
+      ring(); timer = setInterval(ring, 1800)
+    } catch {}
+    return () => { clearInterval(timer); context?.close(); navigator.vibrate?.(0) }
+  }, [incoming?.id])
+  const accept = () => { setCall({ id: incoming.id, mode: incoming.mode, target: incoming.caller, role: 'callee' }); setIncoming(null) }
+  const reject = async () => { const value = incoming; setIncoming(null); await updateDoc(doc(db, 'calls', value.id), { status: 'missed', endedAt: serverTimestamp() }); if (value.chatId && value.messageId) await updateDoc(doc(db, 'chats', value.chatId, 'messages', value.messageId), { systemType: 'missed' }).catch(console.error) }
+  return <>{incoming && <div className="incoming-call"><Avatar profile={incoming.caller} size={70} /><div><span>Входящий {incoming.mode === 'video' ? 'видеозвонок' : 'звонок'}</span><h3>{incoming.caller?.name}</h3></div><button className="accept" onClick={accept}><Phone /></button><button className="reject" onClick={reject}><PhoneOff /></button></div>}{call && <WebRTCCall call={call} close={() => setCall(null)} />}</>
+}
+
 function WebRTCCall({ call, currentUser, close }) {
   const [localStream, setLocalStream] = useState(null)
   const [remoteStream, setRemoteStream] = useState(null)
   const [muted, setMuted] = useState(false)
   const [videoOff, setVideoOff] = useState(call.mode === 'audio')
   const [status, setStatus] = useState('Подключение...')
+  const [connected, setConnected] = useState(false)
   const localVideo = useRef(null)
   const remoteVideo = useRef(null)
 
@@ -637,35 +643,94 @@ function WebRTCCall({ call, currentUser, close }) {
     const callRef = doc(db, 'calls', call.id)
     const localCandidates = collection(callRef, call.role === 'caller' ? 'callerCandidates' : 'calleeCandidates')
     const remoteCandidates = collection(callRef, call.role === 'caller' ? 'calleeCandidates' : 'callerCandidates')
-    const remote = new MediaStream(); setRemoteStream(remote)
-    peer.ontrack = (event) => event.streams[0].getTracks().forEach((track) => remote.addTrack(track))
-    peer.onconnectionstatechange = () => setStatus(peer.connectionState === 'connected' ? 'Соединение установлено' : peer.connectionState)
-    peer.onicecandidate = (event) => { if (event.candidate) addDoc(localCandidates, event.candidate.toJSON()) }
+    const remote = new MediaStream()
+    const queuedCandidates = []
+    let disposed = false
     let stream
-    navigator.mediaDevices.getUserMedia({ audio: true, video: call.mode === 'video' }).then(async (media) => {
-      stream = media; setLocalStream(media); media.getTracks().forEach((track) => peer.addTrack(track, media))
-      if (call.role === 'caller') {
-        const offer = await peer.createOffer(); await peer.setLocalDescription(offer); await updateDoc(callRef, { offer: { type: offer.type, sdp: offer.sdp } })
-      } else {
-        const snapshot = await getDoc(callRef); const offer = snapshot.data().offer
-        if (!offer) { setStatus('Ожидание предложения...'); return }
-        await peer.setRemoteDescription(offer); const answer = await peer.createAnswer(); await peer.setLocalDescription(answer); await updateDoc(callRef, { answer: { type: answer.type, sdp: answer.sdp }, status: 'active' })
-      }
-    }).catch(() => setStatus('Нет доступа к камере или микрофону'))
+    let ready = false
+    let pendingOffer = null
+    let answering = false
+    let acceptingAnswer = false
+    let timeout
+    const fail = (error) => { if (!disposed) setStatus(`Ошибка звонка: ${error?.message || error}`) }
+    const setRemoteDescription = async (description) => {
+      await peer.setRemoteDescription(new RTCSessionDescription(description))
+      for (const candidate of queuedCandidates.splice(0)) await peer.addIceCandidate(new RTCIceCandidate(candidate))
+    }
+    const answerOffer = async (offer) => {
+      if (!ready || !offer || peer.remoteDescription || answering || disposed) return
+      answering = true
+      try {
+        await setRemoteDescription(offer)
+        const answer = await peer.createAnswer()
+        await peer.setLocalDescription(answer)
+        await updateDoc(callRef, { answer: { type: answer.type, sdp: answer.sdp }, status: 'active' })
+      } catch (error) { answering = false; fail(error) }
+    }
+    peer.ontrack = (event) => {
+      const tracks = event.streams[0]?.getTracks() || [event.track]
+      tracks.forEach((track) => { if (!remote.getTracks().some((existing) => existing.id === track.id)) remote.addTrack(track) })
+      setRemoteStream(new MediaStream(remote.getTracks()))
+    }
+    peer.onconnectionstatechange = () => {
+      if (disposed) return
+      if (peer.connectionState === 'connected') { setConnected(true); setStatus('Соединение установлено') }
+      else if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') setStatus('Не удалось установить соединение. Возможно, для вашей сети нужен TURN-сервер.')
+      else setStatus(peer.connectionState === 'connecting' ? 'Соединение с собеседником...' : peer.connectionState)
+    }
+    peer.onicecandidate = (event) => { if (event.candidate) addDoc(localCandidates, event.candidate.toJSON()).catch(fail) }
     const unsubCall = onSnapshot(callRef, async (snapshot) => {
-      const value = snapshot.data(); if (!value) return
-      if (call.role === 'caller' && value.answer && !peer.currentRemoteDescription) await peer.setRemoteDescription(value.answer)
-      if (value.status === 'ended' || value.status === 'rejected') close()
-    })
-    const unsubCandidates = onSnapshot(remoteCandidates, (snapshot) => snapshot.docChanges().forEach((change) => { if (change.type === 'added') peer.addIceCandidate(change.doc.data()) }))
-    return () => { unsubCall(); unsubCandidates(); stream?.getTracks().forEach((track) => track.stop()); peer.close() }
-  }, [call.id])
+      if (disposed) return
+      const value = snapshot.data()
+      if (!value) return
+      if (['ended', 'rejected', 'missed'].includes(value.status)) { close(); return }
+      try {
+        if (call.role === 'callee' && value.offer) { pendingOffer = value.offer; await answerOffer(pendingOffer) }
+        if (call.role === 'caller' && value.answer && !peer.remoteDescription && !acceptingAnswer) {
+          acceptingAnswer = true
+          await setRemoteDescription(value.answer)
+        }
+      } catch (error) { fail(error) }
+    }, fail)
+    const unsubCandidates = onSnapshot(remoteCandidates, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type !== 'added' || disposed) return
+        const candidate = change.doc.data()
+        if (peer.remoteDescription) peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(fail)
+        else queuedCandidates.push(candidate)
+      })
+    }, fail)
+    const start = async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) throw new Error('Микрофон и камера недоступны в этом браузере')
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: call.mode === 'video' })
+        if (disposed) { stream.getTracks().forEach((track) => track.stop()); return }
+        setLocalStream(stream)
+        stream.getTracks().forEach((track) => peer.addTrack(track, stream))
+        ready = true
+        if (call.role === 'callee' && pendingOffer) await answerOffer(pendingOffer)
+        if (call.role === 'caller') {
+          const offer = await peer.createOffer()
+          await peer.setLocalDescription(offer)
+          await updateDoc(callRef, { offer: { type: offer.type, sdp: offer.sdp } })
+          setStatus('Ожидание ответа...')
+        } else {
+          const snapshot = await getDoc(callRef)
+          if (snapshot.data()?.offer) { pendingOffer = snapshot.data().offer; await answerOffer(pendingOffer) }
+          else setStatus('Ожидание звонка...')
+        }
+      } catch (error) { fail(error) }
+    }
+    start()
+    timeout = setTimeout(() => { if (!disposed && peer.connectionState !== 'connected') setStatus('Не удалось соединиться за 35 секунд. Проверьте сеть или повторите звонок.') }, 35_000)
+    return () => { disposed = true; clearTimeout(timeout); unsubCall(); unsubCandidates(); stream?.getTracks().forEach((track) => track.stop()); peer.close() }
+  }, [call.id, call.role, call.mode])
   useEffect(() => { if (localVideo.current && localStream) localVideo.current.srcObject = localStream }, [localStream])
   useEffect(() => { if (remoteVideo.current && remoteStream) remoteVideo.current.srcObject = remoteStream }, [remoteStream])
-  const finish = async () => { await updateDoc(doc(db, 'calls', call.id), { status: 'ended' }); close() }
+  const finish = async () => { close(); await updateDoc(doc(db, 'calls', call.id), { status: 'ended', endedAt: serverTimestamp() }).catch(console.error) }
   const toggleMute = () => { localStream?.getAudioTracks().forEach((track) => { track.enabled = muted }); setMuted(!muted) }
   const toggleVideo = () => { localStream?.getVideoTracks().forEach((track) => { track.enabled = videoOff }); setVideoOff(!videoOff) }
-  return <div className="call-overlay"><div className="call-stage"><video className="remote-call-video" ref={remoteVideo} autoPlay playsInline />{call.mode === 'video' && <video className="local-call-video" ref={localVideo} autoPlay muted playsInline />} {!remoteStream?.active && <div className="call-avatar"><Avatar profile={call.target} size={112} /><h2>{call.target.name}</h2><p>{status}</p></div>}<div className="call-meta"><span>{call.mode === 'video' ? 'Видеозвонок' : 'Аудиозвонок'}</span><b>{status}</b></div><div className="call-controls"><button className={muted ? 'off' : ''} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}</button>{call.mode === 'video' && <button className={videoOff ? 'off' : ''} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}</button>}<button className="hangup" onClick={finish}><PhoneOff /></button></div></div></div>
+  return <div className="call-overlay"><div className="call-stage"><video className="remote-call-video" ref={remoteVideo} autoPlay playsInline />{call.mode === 'video' && <video className="local-call-video" ref={localVideo} autoPlay muted playsInline />}{(!connected || call.mode === 'audio') && <div className="call-avatar"><Avatar profile={call.target} size={112} /><h2>{call.target.name}</h2><p>{status}</p></div>}<div className="call-meta"><span>{call.mode === 'video' ? 'Видеозвонок' : 'Аудиозвонок'}</span><b>{status}</b></div><div className="call-controls"><button className={muted ? 'off' : ''} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}</button>{call.mode === 'video' && <button className={videoOff ? 'off' : ''} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}</button>}<button className="hangup" onClick={finish}><PhoneOff /></button></div></div></div>
 }
 
 function MessagesPage({ data, update, initialFriend }) {
@@ -1083,6 +1148,7 @@ export default function App() {
   const freshViewedProfile = viewedProfile?.uid === currentUser.uid ? visibleProfile : networkUsers.find((user) => user.uid === viewedProfile?.uid) || viewedProfile
   const themeStyle = { '--acid': data.settings.accent, '--bg': data.settings.themeMode === 'light' ? '#f3f5ef' : data.settings.background, '--panel': data.settings.themeMode === 'light' ? '#ffffff' : '#141714', '--panel2': data.settings.themeMode === 'light' ? '#e8ece5' : '#1b1f1b', '--line': data.settings.themeMode === 'light' ? '#ced5ca' : '#293029', '--muted': data.settings.themeMode === 'light' ? '#687268' : '#8d968d', '--white': data.settings.themeMode === 'light' ? '#151815' : '#f2f4ed', fontSize: `${data.settings.scale / 100}rem` }
   return <div className={`app-shell theme-${data.settings.themeMode}`} style={themeStyle}>
+    <IncomingCallListener currentUser={currentUser} />
     <div className={`mobile-drawer ${menu ? 'open' : ''}`} onClick={(e) => e.target === e.currentTarget && setMenu(false)}><Sidebar active={active} setActive={navigate} profile={visibleProfile} /></div>
     <Sidebar active={active} setActive={navigate} profile={visibleProfile} />
     <div className={`workspace ${data.settings.compact ? 'compact' : ''} ${data.settings.reduceMotion ? 'reduce-motion' : ''}`}><Topbar title={titles[active]} query={searchQuery} setQuery={setSearchQuery} openMenu={() => setMenu(true)} profile={visibleProfile} notifications={data.notifications.filter((item) => !item.read).length} openNotifications={() => setNotificationOpen(true)} />

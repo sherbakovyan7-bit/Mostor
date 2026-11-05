@@ -67,3 +67,4 @@
 @media(max-width:720px){.sticker-workshop{grid-template-columns:1fr}.workshop-controls{padding-bottom:5px}.chat-sticker.long{width:210px;height:105px}.chat-sticker.square{width:140px;height:140px}}
 .chat-sticker-button{padding:0;border:0;background:transparent;color:inherit;display:grid;justify-items:center}.chat-sticker-button>span{color:var(--muted);font-size:10px}.chat-sticker-button:hover>span{color:var(--acid)}.sticker-loading{display:grid;place-items:center;color:var(--muted);font-size:11px;text-align:center}
 .avatar-button{position:relative}.avatar-presence{position:absolute;right:0;bottom:0;width:12px;height:12px;border:2px solid var(--panel);border-radius:50%;background:#687068}.avatar-presence.online{background:#4dbe65}
+.call-stage>.remote-call-video:not([src]){display:block}
