@@ -9,6 +9,7 @@ import {
   Video, VideoOff, X, Zap,
 } from 'lucide-react'
 import { auth, db } from './firebase'
+import { getIceServers, hasTurnServer } from './callConfig'
 import { isOnline, presenceLabel } from './presence.mjs'
 
 const initialData = {
@@ -639,7 +640,7 @@ function WebRTCCall({ call, currentUser, close }) {
   const remoteVideo = useRef(null)
 
   useEffect(() => {
-    const peer = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }] })
+    const peer = new RTCPeerConnection({ iceServers: getIceServers() })
     const callRef = doc(db, 'calls', call.id)
     const localCandidates = collection(callRef, call.role === 'caller' ? 'callerCandidates' : 'calleeCandidates')
     const remoteCandidates = collection(callRef, call.role === 'caller' ? 'calleeCandidates' : 'callerCandidates')
@@ -652,6 +653,7 @@ function WebRTCCall({ call, currentUser, close }) {
     let answering = false
     let acceptingAnswer = false
     let timeout
+    let diagnosticsTimer
     const fail = (error) => { if (!disposed) setStatus(`Ошибка звонка: ${error?.message || error}`) }
     const setRemoteDescription = async (description) => {
       await peer.setRemoteDescription(new RTCSessionDescription(description))
@@ -675,8 +677,14 @@ function WebRTCCall({ call, currentUser, close }) {
     peer.onconnectionstatechange = () => {
       if (disposed) return
       if (peer.connectionState === 'connected') { setConnected(true); setStatus('Соединение установлено') }
-      else if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') setStatus('Не удалось установить соединение. Возможно, для вашей сети нужен TURN-сервер.')
+      else if (peer.connectionState === 'failed') setStatus(hasTurnServer ? 'WebRTC-соединение не установлено. Проверьте настройки TURN.' : 'Прямое WebRTC-соединение заблокировано сетью. Для звонков нужен TURN-сервер.')
+      else if (peer.connectionState === 'disconnected') setStatus('WebRTC-соединение прервано. Ожидаем восстановления...')
       else setStatus(peer.connectionState === 'connecting' ? 'Соединение с собеседником...' : peer.connectionState)
+    }
+    peer.oniceconnectionstatechange = () => {
+      if (disposed || peer.connectionState === 'connected') return
+      if (peer.iceConnectionState === 'checking') setStatus('Проверяем прямой маршрут между устройствами...')
+      if (peer.iceConnectionState === 'failed') setStatus(hasTurnServer ? 'Маршрут через ICE/TURN не найден. Проверьте TURN-сервер.' : 'ICE не нашёл маршрут между устройствами. Нужен TURN-сервер, даже если интернет быстрый.')
     }
     peer.onicecandidate = (event) => { if (event.candidate) addDoc(localCandidates, event.candidate.toJSON()).catch(fail) }
     const unsubCall = onSnapshot(callRef, async (snapshot) => {
@@ -722,8 +730,28 @@ function WebRTCCall({ call, currentUser, close }) {
       } catch (error) { fail(error) }
     }
     start()
-    timeout = setTimeout(() => { if (!disposed && peer.connectionState !== 'connected') setStatus('Не удалось соединиться за 35 секунд. Проверьте сеть или повторите звонок.') }, 35_000)
-    return () => { disposed = true; clearTimeout(timeout); unsubCall(); unsubCandidates(); stream?.getTracks().forEach((track) => track.stop()); peer.close() }
+    diagnosticsTimer = setTimeout(() => {
+      if (disposed || peer.connectionState === 'connected') return
+      if (!peer.remoteDescription) setStatus(call.role === 'caller' ? 'Собеседник ещё не ответил на звонок.' : 'Ожидаем предложение звонка...')
+      else if (peer.iceConnectionState !== 'connected' && peer.iceConnectionState !== 'completed') setStatus(hasTurnServer ? 'ICE проверяет маршрут. Проверьте подключение TURN.' : 'Устройства получили сигнал звонка, но прямой маршрут не найден. Требуется TURN-сервер.')
+    }, 15_000)
+    timeout = setTimeout(async () => {
+      if (disposed || peer.connectionState === 'connected') return
+      try {
+        const snapshot = await getDoc(callRef)
+        if (disposed || !snapshot.exists()) return
+        if (snapshot.data().status === 'ringing' && call.role === 'caller') {
+          await updateDoc(callRef, { status: 'missed', endedAt: serverTimestamp() })
+          if (snapshot.data().chatId && snapshot.data().messageId) {
+            await updateDoc(doc(db, 'chats', snapshot.data().chatId, 'messages', snapshot.data().messageId), { systemType: 'missed' }).catch(console.error)
+          }
+          setStatus('Собеседник не ответил. Звонок отмечен как пропущенный.')
+        } else if (snapshot.data().status === 'active') {
+          setStatus(hasTurnServer ? 'Сигнал вызова получен, но ICE/TURN не установил соединение.' : 'Сигнал вызова получен, но прямой маршрут заблокирован. Для этих сетей нужен TURN-сервер.')
+        }
+      } catch (error) { fail(error) }
+    }, 35_000)
+    return () => { disposed = true; clearTimeout(timeout); clearTimeout(diagnosticsTimer); unsubCall(); unsubCandidates(); stream?.getTracks().forEach((track) => track.stop()); peer.close() }
   }, [call.id, call.role, call.mode])
   useEffect(() => { if (localVideo.current && localStream) localVideo.current.srcObject = localStream }, [localStream])
   useEffect(() => { if (remoteVideo.current && remoteStream) remoteVideo.current.srcObject = remoteStream }, [remoteStream])

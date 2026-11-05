@@ -6,9 +6,107 @@
     <meta name="theme-color" content="#050605" />
     <title>Mostor — технический перерыв</title>
     <style>
-      html, body { width: 100%; height: 100%; margin: 0; background: #050605; }
-      img { display: block; width: 100%; height: 100%; object-fit: contain; }
+      :root { font-family: Arial, sans-serif; color: #f3f4ef; background: #050605; }
+      * { box-sizing: border-box; }
+      body { min-height: 100vh; margin: 0; }
+      button, input { font: inherit; }
+      button { cursor: pointer; }
+      .maintenance { min-height: 100vh; padding: 48px 20px; background: linear-gradient(#05060570, #050605dc), url('./Техперерыв.png') center/contain no-repeat; display: grid; place-items: center; }
+      .panel { width: min(720px, 100%); padding: 30px; border: 1px solid #394139; border-radius: 22px; background: #121612e8; box-shadow: 0 25px 90px #000b; text-align: center; }
+      .logo { color: #caff3d; font-size: 28px; font-weight: 900; letter-spacing: -1px; }
+      h1 { margin: 18px 0 10px; font-size: clamp(28px, 5vw, 43px); }
+      p { color: #a9b1a9; line-height: 1.55; }
+      .choices { margin-top: 26px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+      .choices button, .play { padding: 11px 18px; border: 1px solid #424b42; border-radius: 11px; color: #f3f4ef; background: #202620; font-weight: 700; }
+      .choices button.active, .play { border-color: #caff3d; color: #111; background: #caff3d; }
+      .activity { margin-top: 25px; padding: 20px; border: 1px solid #303830; border-radius: 16px; background: #0b0e0b; }
+      .activity[hidden] { display: none; }
+      .score { display: flex; justify-content: center; gap: 25px; font-weight: 700; }
+      .score b { color: #caff3d; }
+      .play { width: 132px; height: 132px; margin: 18px auto 5px; border-radius: 50%; font-size: 20px; }
+      .play:disabled { opacity: .6; cursor: default; }
+      .file-picker { display: inline-block; margin: 10px auto; padding: 11px 16px; border-radius: 10px; color: #111; background: #caff3d; cursor: pointer; font-weight: 700; }
+      .file-picker input { display: none; }
+      video { width: 100%; max-height: 360px; margin-top: 12px; border-radius: 11px; background: #000; }
+      small { display: block; margin-top: 15px; color: #818b81; }
     </style>
   </head>
-  <body><img src="./Техперерыв.png" alt="В Mostor технический перерыв" /></body>
+  <body>
+    <main class="maintenance">
+      <section class="panel">
+        <div class="logo">Mostor.</div>
+        <h1>Технический перерыв</h1>
+        <p>Пока мы чиним звонки, можно сыграть в «Импульс» или посмотреть своё видео прямо здесь.</p>
+        <div class="choices">
+          <button id="game-tab" class="active" type="button">Играть</button>
+          <button id="video-tab" type="button">Смотреть видео</button>
+        </div>
+        <section id="game" class="activity">
+          <h2>Импульс</h2>
+          <p>Набери максимум очков за десять секунд.</p>
+          <div class="score"><span>Очки: <b id="points">0</b></span><span>Время: <b id="seconds">10</b></span></div>
+          <button id="play" class="play" type="button">Старт</button>
+        </section>
+        <section id="videos" class="activity" hidden>
+          <h2>Локальный плеер</h2>
+          <p>Выбери видео со своего устройства. Файл никуда не загружается.</p>
+          <label class="file-picker">Выбрать видео<input id="video-file" type="file" accept="video/*" /></label>
+          <video id="player" controls playsinline hidden></video>
+        </section>
+        <small>Mostor скоро вернётся. Игра и видео работают только в этой вкладке.</small>
+      </section>
+    </main>
+    <script>
+      const gameTab = document.getElementById('game-tab')
+      const videoTab = document.getElementById('video-tab')
+      const game = document.getElementById('game')
+      const videos = document.getElementById('videos')
+      function show(section) {
+        game.hidden = section !== 'game'
+        videos.hidden = section !== 'videos'
+        gameTab.classList.toggle('active', section === 'game')
+        videoTab.classList.toggle('active', section === 'videos')
+      }
+      gameTab.addEventListener('click', () => show('game'))
+      videoTab.addEventListener('click', () => show('videos'))
+
+      const play = document.getElementById('play')
+      const points = document.getElementById('points')
+      const seconds = document.getElementById('seconds')
+      let running = false
+      let timeLeft = 10
+      let score = 0
+      let timer
+      play.addEventListener('click', () => {
+        if (!running) {
+          clearInterval(timer)
+          running = true
+          score = 0
+          timeLeft = 10
+          play.textContent = 'Нажимай!'
+          points.textContent = score
+          seconds.textContent = timeLeft
+          timer = setInterval(() => {
+            timeLeft -= 1
+            seconds.textContent = timeLeft
+            if (timeLeft === 0) { clearInterval(timer); running = false; play.textContent = 'Ещё раз' }
+          }, 1000)
+        } else { score += 1; points.textContent = score; play.textContent = '+1' }
+      })
+
+      const fileInput = document.getElementById('video-file')
+      const player = document.getElementById('player')
+      let fileUrl
+      fileInput.addEventListener('change', () => {
+        if (fileUrl) URL.revokeObjectURL(fileUrl)
+        const file = fileInput.files[0]
+        if (!file) { player.hidden = true; return }
+        fileUrl = URL.createObjectURL(file)
+        player.src = fileUrl
+        player.hidden = false
+        player.play().catch(() => {})
+      })
+      window.addEventListener('pagehide', () => { if (fileUrl) URL.revokeObjectURL(fileUrl) })
+    </script>
+  </body>
 </html>
