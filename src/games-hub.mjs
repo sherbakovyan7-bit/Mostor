@@ -1,6 +1,6 @@
 import { encodeRom, emulatorDocument, romPlatform } from './rom-platforms.mjs'
 import { listGameRecordings, saveGameRecording } from './game-recordings.mjs'
-import { DEFAULT_NES_KEYS, NES_KEY_ACTIONS, NES_PLAYER_TWO_KEYS, nesKeyboardMap, normalizeNesKeys } from './nes-keys.mjs'
+import { DEFAULT_NES_KEYS, NES_KEY_ACTIONS, NES_PLAYER_TWO_KEYS, NES_PROFILE_PREFIX, nesKeyboardMap, nesRomId, normalizeNesProfile } from './nes-keys.mjs'
 import { validateNesRom } from './nes-rom.mjs'
 
 export const GAME_TYPES = [
@@ -78,6 +78,7 @@ const styles = `
 .hub-key-grid button,.hub-key-reset { padding:9px;border:1px solid #566356;border-radius:8px;background:#263026;color:#fff;text-align:left;cursor:pointer }
 .hub-key-grid button.waiting { border-color:#caff3d;color:#caff3d }
 .hub-key-settings p { color:#aab5aa }
+.hub-key-row { display:grid;gap:5px }.hub-key-row input { min-width:0;padding:8px;border:1px solid #566356;border-radius:8px;background:#161c16;color:#fff }
 .hub-platform-frame { display:block;width:100%;height:min(640px,75vh);margin-top:12px;border:1px solid #394139;border-radius:10px;background:#050605 }
 .hub-platform-frame[hidden] { display:none }
 .hub-featured { margin:16px 0;padding:15px;border:1px solid #394139;border-radius:12px;background:#141a14 }.hub-featured h3 { margin:0 0 6px }.hub-featured>p { color:#aab5aa }
@@ -171,12 +172,16 @@ export function mountGamesHub(root, options = {}) {
       recorder.start(1000)
     } catch (reason) { message.textContent = `Игра запущена. Запись недоступна: ${reason.message}` }
   }
-  const keyStorageKey = 'mostor-nes-keymap'
   let pendingKeyAssignment
   const keyActions = NES_KEY_ACTIONS
   const defaultKeys = DEFAULT_NES_KEYS
-  let keySettings
-  try { keySettings = normalizeNesKeys(JSON.parse(localStorage.getItem(keyStorageKey) || '{}')) } catch { keySettings = { ...defaultKeys } }
+  let currentRomId = ''
+  let actionLabels = {}
+  let keySettings = { ...defaultKeys }
+  const saveProfile = () => {
+    if (!currentRomId) return
+    localStorage.setItem(NES_PROFILE_PREFIX + currentRomId, JSON.stringify({ keys: keySettings, labels: actionLabels }))
+  }
   const applyKeys = () => {
     if (!nesBrowser) return
     releaseNesKeys()
@@ -494,11 +499,25 @@ export function mountGamesHub(root, options = {}) {
       fallbackFrame.removeAttribute('src')
       if (nesFallbackUrl) { URL.revokeObjectURL(nesFallbackUrl); nesFallbackUrl = null }
       nesData = null
+      currentRomId = ''
+      actionLabels = {}
+      keySettings = { ...defaultKeys }
+      renderKeys()
       if (!/\.nes$/i.test(file.name) || file.size > 4 * 1024 * 1024) { nesMessage.textContent = 'Нужен .nes-файл до 4 МБ.'; return }
       try {
         const data = new Uint8Array(await file.arrayBuffer())
         if (disposed || loadId !== nesLoadId) return
         validateNesRom(data)
+        const id = await nesRomId(data)
+        if (disposed || loadId !== nesLoadId) return
+        let savedProfile
+        try { savedProfile = JSON.parse(localStorage.getItem(NES_PROFILE_PREFIX + id) || 'null') } catch { savedProfile = null }
+        const profile = normalizeNesProfile(savedProfile)
+        keySettings = profile.keys
+        actionLabels = profile.labels
+        currentRomId = id
+        renderKeys()
+        keyHelp.textContent = `Настройки для ${file.name}: выбери кнопку NES, назначь ей клавишу и при желании подпиши действие. Сохранено только на этом устройстве.`
         nesData = data
         nesTitle = file.name
         const jsnes = await loadNesEmulator()
@@ -516,8 +535,8 @@ export function mountGamesHub(root, options = {}) {
       } catch (reason) { if (!disposed && loadId === nesLoadId) { if (nesData) fallback(`JSNES не открыл ROM: ${reason.message}`); else nesMessage.textContent = `Не удалось открыть ROM: ${reason.message}` } }
     })
     const keyPanel = element('details', 'hub-key-settings')
-    keyPanel.append(element('summary', '', 'Настроить клавиши NES'))
-    const keyHelp = element('p', '', 'Нажми на действие, затем нажми новую клавишу. Настройка сохраняется только на этом устройстве. Клавиши работают и в игре на странице техперерыва.')
+    keyPanel.append(element('summary', '', 'Настроить клавиши и действия этой NES-игры'))
+    const keyHelp = element('p', '', 'Выбери .nes-файл, чтобы настроить клавиши именно для него. ROM сообщает только кнопки NES (↑ ↓ ← → A B Start Select), а не названия вроде «стрелять» или «прыгать». Подпиши действия сам: одна кнопка может делать разное в разных местах игры.')
     const keyGrid = element('div', 'hub-key-grid')
     const keyName = (code) => ({ 13: 'Enter', 17: 'Ctrl', 32: 'Space', 37: '←', 38: '↑', 39: '→', 40: '↓' })[code] || String.fromCharCode(code)
     const renderKeys = () => {
@@ -525,7 +544,9 @@ export function mountGamesHub(root, options = {}) {
       pendingKeyAssignment = null
       keyGrid.replaceChildren()
       for (const [id, label] of keyActions) {
-        const control = button(`${label}: ${keyName(keySettings[id])}`, () => {
+        const row = element('div', 'hub-key-row')
+        const control = button(`${label}${actionLabels[id] ? ` · ${actionLabels[id]}` : ''}: ${keyName(keySettings[id])}`, () => {
+          if (!currentRomId) { keyHelp.textContent = 'Сначала выбери NES ROM.'; return }
           pendingKeyAssignment?.abort()
           releaseNesKeys()
           pendingKeyAssignment = new AbortController()
@@ -538,18 +559,35 @@ export function mountGamesHub(root, options = {}) {
             const code = event.keyCode || event.which
             if (!code || code > 255 || NES_PLAYER_TWO_KEYS.has(code) || Object.entries(keySettings).some(([other, used]) => other !== id && used === code) || (nesBrowser && nesBrowser.keyboard.keys[code]?.[0] === 2)) { keyHelp.textContent = 'Клавиша уже занята или не поддерживается. Выбери другую.'; renderKeys(); return }
             keySettings[id] = code
-            localStorage.setItem(keyStorageKey, JSON.stringify(keySettings))
+            try { saveProfile() } catch (reason) { keyHelp.textContent = `Не удалось сохранить настройку: ${reason.message}`; applyKeys(); renderKeys(); return }
             keyHelp.textContent = `${label}: ${keyName(code)}. Настройка сохранена.`
             applyKeys()
             renderKeys()
           }
           window.addEventListener('keydown', assign, { capture: true, once: true, signal: pendingKeyAssignment.signal })
         })
-        keyGrid.append(control)
+        const actionName = element('input')
+        actionName.type = 'text'
+        actionName.maxLength = 32
+        actionName.placeholder = 'Действие в этой игре (необязательно)'
+        actionName.setAttribute('aria-label', `Название действия для кнопки ${label}`)
+        actionName.value = actionLabels[id] || ''
+        actionName.disabled = !currentRomId
+        actionName.addEventListener('change', () => {
+          const name = actionName.value.trim().slice(0, 32)
+          if (name) actionLabels[id] = name
+          else delete actionLabels[id]
+          actionName.value = name
+          control.textContent = `${label}${name ? ` · ${name}` : ''}: ${keyName(keySettings[id])}`
+          try { saveProfile() } catch (reason) { keyHelp.textContent = `Не удалось сохранить настройку: ${reason.message}` }
+        })
+        control.disabled = !currentRomId
+        row.append(control, actionName)
+        keyGrid.append(row)
       }
     }
     renderKeys()
-    keyPanel.append(keyHelp, keyGrid, button('Сбросить клавиши', () => { keySettings = { ...defaultKeys }; localStorage.removeItem(keyStorageKey); applyKeys(); renderKeys() }, 'hub-key-reset'))
+    keyPanel.append(keyHelp, keyGrid, button('Сбросить настройки этой игры', () => { if (!currentRomId) return; keySettings = { ...defaultKeys }; actionLabels = {}; localStorage.removeItem(NES_PROFILE_PREFIX + currentRomId); applyKeys(); renderKeys() }, 'hub-key-reset'))
     nesPanel.append(romPicker, nesMessage, nesScreen, nesControls, pad, keyPanel, fallbackFrame)
     body.append(nesPanel)
     activeNesPane = fallbackFrame

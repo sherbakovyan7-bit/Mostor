@@ -37,23 +37,13 @@ jobs:
           VITE_TURN_CREDENTIAL: ${{ vars.MOSTOR_TURN_CREDENTIAL }}
         run: npm run build
 
-      - name: Prepare maintenance page
-        run: |
-          cp 'Техперерыв.png' maintenance/
-          cp src/games-hub.mjs maintenance/games-hub.mjs
-          cp src/nes-keys.mjs maintenance/nes-keys.mjs
-          cp src/nes-rom.mjs maintenance/nes-rom.mjs
-          cp src/game-recordings.mjs maintenance/game-recordings.mjs
-          cp src/rom-platforms.mjs maintenance/rom-platforms.mjs
-          cp node_modules/jsnes/dist/jsnes.min.js maintenance/jsnes.min.js
-
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
       - name: Upload website
         uses: actions/upload-pages-artifact@v3
         with:
-          path: maintenance
+          path: dist
 
   deploy:
     environment:

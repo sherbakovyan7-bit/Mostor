@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { DEFAULT_NES_KEYS, nesKeyboardMap, normalizeNesKeys } from '../src/nes-keys.mjs'
+import { DEFAULT_NES_KEYS, NES_PROFILE_PREFIX, nesKeyboardMap, nesRomId, normalizeNesKeys, normalizeNesProfile } from '../src/nes-keys.mjs'
 
 test('NES keyboard maps arrows, X, Z, Enter and Ctrl to player one', () => {
   const controller = { BUTTON_UP: 4, BUTTON_DOWN: 5, BUTTON_LEFT: 6, BUTTON_RIGHT: 7, BUTTON_A: 0, BUTTON_B: 1, BUTTON_START: 3, BUTTON_SELECT: 2 }
@@ -24,4 +24,14 @@ test('invalid or duplicate saved NES keys fall back to defaults', () => {
   assert.deepEqual(normalizeNesKeys({ A: 90 }), DEFAULT_NES_KEYS)
   assert.deepEqual(normalizeNesKeys({ A: 103 }), DEFAULT_NES_KEYS)
   assert.equal(normalizeNesKeys({ A: 67 }).A, 67)
+})
+
+test('ROM identity uses file contents, and profiles keep only safe action labels', async () => {
+  assert.match(NES_PROFILE_PREFIX, /nes-controls/)
+  const a = new Uint8Array([78, 69, 83, 26, 1])
+  const b = new Uint8Array([78, 69, 83, 26, 2])
+  assert.equal(await nesRomId(a), await nesRomId(a.slice()))
+  assert.notEqual(await nesRomId(a), await nesRomId(b))
+  assert.deepEqual(normalizeNesProfile({ keys: { ...DEFAULT_NES_KEYS, A: 67 }, labels: { A: '  Прыжок  ', B: 42 } }),
+    { keys: { ...DEFAULT_NES_KEYS, A: 67 }, labels: { A: 'Прыжок' } })
 })
